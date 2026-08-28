@@ -1,0 +1,137 @@
+{
+  "_说明": "这是配置模板。复制为 config.json 后填入你自己的密钥：cp config.example.json config.json（Windows: copy）。config.json 已被 .gitignore 排除，不会上传。",
+
+  "appKey": "你的萤石AppKey",
+  "appSecret": "你的萤石AppSecret",
+
+  "devices": [
+    {
+      "name": "双溪村-CP1云台机",
+      "serial": "BK2385850",
+      "watch": true
+    },
+    {
+      "name": "木山村前门-PD1",
+      "serial": "BG6569629",
+      "watch": true
+    },
+    {
+      "name": "示例-已下线设备",
+      "serial": "D24049607",
+      "watch": false,
+      "hidden": true
+    }
+  ],
+  "_devices说明": "watch=true 才纳入监控；hidden=true 在看板和推送中完全隐藏（用于淘汰的老设备）",
+
+  "watchIntervalSec": 300,
+
+  "ai": {
+    "enabled": true,
+    "pushOnlyWhenPerson": true,
+    "failCooldownSec": 300,
+    "maxTokens": 300,
+    "prompt": "这是家里监控摄像头抓拍的画面。请判断画面中是否有人。第一行必须输出有人或无人，然后用一句话简述画面内容和异常点。",
+    "autoAnalyze": true,
+    "providers": [
+      {
+        "name": "agnes",
+        "baseURL": "https://apihub.agnes-ai.com/v1",
+        "apiKey": "你的APIKey",
+        "model": "agnes-2.5-flash",
+        "maxTokens": 2500,
+        "enabled": true
+      },
+      {
+        "name": "zhipu",
+        "baseURL": "https://open.bigmodel.cn/api/paas/v4",
+        "apiKey": "你的APIKey",
+        "model": "glm-4v-flash",
+        "enabled": true
+      }
+    ],
+    "_providers说明": "按数组顺序尝试；失败渠道进入 failCooldownSec 冷却并自动沉底，成功后恢复优先级。要求全部为 OpenAI 兼容 /chat/completions 接口"
+  },
+
+  "openidNames": {
+    "_说明": "微信 openid -> 推送时使用的称呼。留空则不加称呼",
+    "oAQMW3XXXXXXXXXXXXXXXXXXXXXX": "亲爱的东哥"
+  },
+  "nicknames": {
+    "_说明": "微信昵称 -> 备注名，仅用于看板展示，可留空"
+  },
+  "liveUrls": {
+    "_说明": "设备序列号 -> 直播 m3u8 地址（萤石取直播地址接口获得，有有效期）"
+  },
+
+  "push": {
+    "type": "wxTest",
+    "wxpusherAppToken": "",
+    "wxpusherUid": "",
+    "ntfyTopicUrl": "",
+    "note": "报警推送通道。wxTest=复用 wxTest 块发模板消息到测试号关注者（出站调用，不依赖公网）；可选 wecombot / wxpusher / ntfy；none=不推送"
+  },
+
+  "wxGroups": {
+    "_说明": "微信测试号的自定义菜单是全局的，无法按用户显示不同菜单；因此用『点击越权按钮时返回设备已下线』来实现分组可见性。members 填微信 openid（与 openidNames 对应）。未分组的用户=管理员，拥有全部权限",
+    "shuangxi": {
+      "label": "双溪村亲属组",
+      "members": ["oAQMW3XXXXXXXXXXXXXXXXXXXXXX"],
+      "push": "双溪村",
+      "query": "双溪村",
+      "blockMushanMenu": true
+    },
+    "colleague": {
+      "label": "同事组",
+      "members": ["oAQMW3YYYYYYYYYYYYYYYYYYYYYY"],
+      "push": "none",
+      "query": "status",
+      "blockMushanMenu": false
+    }
+  },
+  "_wxGroups说明": "push=可按哪个村子推送(双溪村/木山村/all/none)；query=可查询哪个村子(status=仅设备状态)；blockMushanMenu=是否拦截木山村按钮",
+
+  "ezvizPush": {
+    "secret": "萤石推送回调的secret",
+    "strictVerify": false
+  },
+
+  "webapp": {
+    "enabled": true,
+    "port": 8790
+  },
+
+  "wxServer": {
+    "enabled": true,
+    "port": 8787,
+    "token": "自定义一个回调Token，需与公众号后台一致",
+    "appId": "公众号AppID",
+    "appSecret": "公众号AppSecret",
+    "commands": [
+      {
+        "keywords": ["看家", "家里", "家", "画面"],
+        "device": "BK2385850"
+      },
+      {
+        "keywords": ["门口", "门前", "大门", "前门", "门"],
+        "device": "BG6569629"
+      }
+    ]
+  },
+
+  "wxTest": {
+    "enabled": true,
+    "appId": "测试号AppID",
+    "appSecret": "测试号AppSecret",
+    "templateId": "模板消息ID",
+    "publicBase": "http://你的花生壳域名.vicp.fun",
+    "tunnelType": "oray",
+    "note": "微信测试号（/debug/cgi-bin/sandboxinfo 申请）。publicBase=公网回调地址，填内网穿透给的外网域名，不要带路径"
+  },
+
+  "cfTunnel": {
+    "name": "",
+    "fixedUrl": "",
+    "note": "已弃用：Cloudflare 方案不再使用，保留字段仅为兼容旧配置"
+  }
+}

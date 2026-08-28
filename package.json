@@ -1,0 +1,21 @@
+{
+  "name": "ai-jiankong",
+  "version": "1.0.0",
+  "private": true,
+  "description": "萤石云摄像头 AI 监控：远程抓图 → 视觉大模型判人 → 微信推送 / 公众号被动查询 → Web 报警看板",
+  "main": "monitor.js",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node monitor.js watch",
+    "status": "node monitor.js status",
+    "capture": "node monitor.js capture",
+    "once": "node monitor.js once",
+    "web": "node webapp.js",
+    "wx": "node webhook.js"
+  },
+  "dependencies": {
+    "jimp": "^1.6.1"
+  }
+}

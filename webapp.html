@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>老家监控 · 实时看板</title>
+<style>
+:root{--bg:#0f1419;--card:#161d26;--border:#232b36;--text:#e6e6e6;--text2:#b6c2cc;--accent:#f5c518;--person:#ff6b6b;--nobody:#51cf66;--abnormal:#ffd43b;--btn:#243143;--btn-hover:#2a3a4d}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:"Microsoft YaHei",system-ui,sans-serif;min-height:100vh}
+header{padding:16px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+h1{font-size:20px;color:#fff}
+h1 span{color:var(--accent);font-size:13px;margin-left:8px;font-weight:400}
+.live{padding:20px 24px;max-width:900px;margin:0 auto}
+.live-card{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:24px}
+.live-header{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.live-header h2{font-size:16px;flex:1}
+.controls{display:flex;gap:8px;align-items:center}
+select{background:var(--btn);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 10px;font-size:13px;cursor:pointer;min-width:120px}
+.live-image{position:relative;min-height:300px;background:#0b0f14;display:flex;align-items:center;justify-content:center;overflow:hidden}
+.live-image img{width:100%;max-height:500px;object-fit:contain;display:none}
+.live-overlay{position:absolute;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:1}
+.spinner{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite;display:none}
+@keyframes spin{to{transform:rotate(360deg)}}
+.live-status{color:var(--text2);font-size:14px}
+.live-actions{padding:14px 18px;display:flex;gap:10px;flex-wrap:wrap}
+.btn{background:var(--btn);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:10px 18px;font-size:14px;cursor:pointer;display:flex;align-items:center;gap:6px}
+.btn:hover{background:var(--btn-hover);border-color:var(--accent)}
+.btn.primary{background:#1a3a1a;border-color:#2d6a2d}
+.btn.warn{background:#3a2a10;border-color:#6b5410}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.result-box{background:#0b0f14;border:1px solid var(--border);border-radius:8px;padding:14px;margin:10px 18px 0;display:none}
+.result-box.show{display:block}
+.result-label{font-size:12px;color:var(--text2);margin-bottom:6px}
+.result-text{font-size:14px;line-height:1.6;word-break:break-all}
+.badge{display:inline-block;padding:2px 10px;border-radius:4px;font-size:12px;margin-right:6px}
+.badge.person{background:rgba(255,107,107,.2);color:var(--person)}
+.badge.nobody{background:rgba(81,207,102,.2);color:var(--nobody)}
+.badge.abn{background:rgba(255,212,59,.2);color:var(--abnormal)}
+.badge.prov{background:rgba(154,167,180,.15);color:var(--text2)}
+.badge.skip{background:rgba(43,37,53,.35);color:#c9a7e8}
+.history{padding:0 24px 40px;max-width:1200px;margin:0 auto}
+.history-header{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.history-header h2{font-size:16px;flex:1}
+.filters{display:flex;gap:6px}
+.fb{background:var(--btn);color:var(--text2);border:1px solid var(--border);border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px}
+.fb.on{background:var(--accent);color:#111;border-color:var(--accent);font-weight:600}
+.view-toggle{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
+.vb{background:var(--btn);color:var(--text2);border:none;padding:6px 12px;cursor:pointer;font-size:13px}
+.vb.on{background:var(--accent);color:#111}
+.new-badge{background:rgba(255,107,107,.12);border:1px solid rgba(255,107,107,.3);color:var(--person);border-radius:6px;padding:4px 12px;font-size:13px;display:none;cursor:pointer}
+.new-badge.show{display:inline-block;animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+.hint{color:var(--text2);font-size:12px;margin-left:auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px}
+.cards.list-view{display:block}
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;position:relative}
+.cards.list-view .card{display:flex;align-items:center;margin-bottom:8px}
+.cards.list-view .card img{width:110px;height:78px}
+.card img{width:100%;height:180px;object-fit:cover;display:block;background:#0b0f14}
+.card-meta{padding:10px 14px 4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.card-meta .t{color:var(--text2);font-size:12px}
+.card-meta .dev{background:#1a3a4a;color:#7cc4ff;border-radius:4px;padding:2px 8px;font-size:12px}
+.card-meta .title{color:var(--text2);font-size:13px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.card-badges{padding:4px 14px;display:flex;gap:6px;flex-wrap:wrap}
+.card-ai{padding:2px 14px 12px;color:var(--text2);font-size:13px;line-height:1.6;word-break:break-all}
+.del-btn{position:absolute;top:8px;right:8px;background:#4a3030;border:1px solid #5a3a3a;color:#ffb3b3;border-radius:4px;padding:3px 10px;font-size:12px;cursor:pointer;opacity:0;transition:opacity .15s}
+.card:hover .del-btn{opacity:1}
+.del-btn:hover{background:#6a4040;color:#fff}
+.select-box{position:absolute;top:8px;left:8px;width:18px;height:18px;cursor:pointer;z-index:5}
+.card.selected{outline:2px solid #6c9fff;outline-offset:-2px}
+.bulk-bar{display:none;align-items:center;gap:10px;padding:10px 16px;background:#1a2030;border-bottom:1px solid #2a3040;flex-wrap:wrap}
+.bulk-bar.show{display:flex}
+.bulk-bar .sel-info{color:var(--text2);font-size:13px;flex:1}
+.bulk-btn{padding:6px 14px;border-radius:4px;border:1px solid #3a3a3a;background:#2a2a2a;color:var(--text);cursor:pointer;font-size:13px;transition:all .15s}
+.bulk-btn:hover{background:#3a3a3a}
+.bulk-btn.danger{background:#4a2020;border-color:#5a3030;color:#ffb3b3}
+.bulk-btn.danger:hover{background:#6a3030}
+.bulk-btn.primary{background:#2a3a5a;border-color:#3a4a7a;color:#aac4ff}
+.bulk-btn.primary:hover{background:#3a4a7a}
+.empty{text-align:center;color:var(--text2);padding:60px 20px;font-size:14px}
+.tabs{display:flex;gap:8px;margin-left:auto}
+.tab{background:var(--btn);color:var(--text2);border:1px solid var(--border);border-radius:8px;padding:8px 16px;cursor:pointer;font-size:14px}
+.tab:hover{background:var(--btn-hover)}
+.tab.on{background:var(--accent);color:#111;border-color:var(--accent);font-weight:600}
+.push-item{display:flex;gap:10px;padding:8px 18px;border-top:1px solid var(--border);font-size:13px;color:var(--text2);align-items:baseline}
+.push-item .dev{flex:none}
+.push-item .txt{flex:1;word-break:break-all}
+
+/* ---- 萤石云推送记录（独立样式，不复用 history 卡片） ---- */
+.push-page{padding:0 24px 40px;max-width:1200px;margin:0 auto}
+.push-header{display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap}
+.push-header h2{font-size:20px;color:#fff;flex:1}
+.push-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.push-actions .hint{color:var(--text2);font-size:12px;margin-left:0}
+.push-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px}
+.stat-tile{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:14px 16px}
+.stat-tile .label{color:var(--text2);font-size:12px;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px}
+.stat-tile .val{color:#fff;font-size:22px;font-weight:600;line-height:1}
+.stat-tile .sub{color:var(--text2);font-size:12px;margin-top:6px}
+.stat-tile .val.accent{color:var(--accent)}
+.stat-tile .val.person{color:var(--person)}
+.stat-tile .val.nobody{color:var(--nobody)}
+.push-group{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:14px}
+.push-group-head{display:flex;align-items:center;gap:12px;padding:14px 18px;border-bottom:1px solid var(--border);cursor:pointer;user-select:none}
+.push-group-head:hover{background:rgba(255,255,255,.02)}
+.push-group-head .name{font-size:15px;font-weight:600;color:#fff}
+.push-group-head .name .code{color:var(--text2);font-weight:400;font-size:12px;margin-left:8px;font-family:Consolas,monospace}
+.push-group-head .count{color:var(--accent);font-weight:600;font-size:13px;background:rgba(245,197,24,.1);padding:2px 10px;border-radius:10px}
+.push-group-head .tip{color:var(--text2);font-size:12px;flex:1}
+.push-group-head .toggle{background:none;border:none;color:var(--text2);font-size:18px;cursor:pointer;padding:0 4px;transition:transform .2s}
+.push-group.collapsed .toggle{transform:rotate(-90deg)}
+.push-group.collapsed .push-rows{display:none}
+.push-rows{padding:6px 0}
+.push-row{display:grid;grid-template-columns:170px 1fr 120px;gap:14px;padding:10px 18px;border-top:1px solid rgba(35,43,54,.5);font-size:13px;align-items:center}
+.push-row:first-child{border-top:none}
+.push-row .t-time{color:var(--text2);font-family:Consolas,monospace;font-size:12px}
+.push-row .t-dev{color:#7cc4ff;font-size:13px;display:flex;align-items:center;gap:6px}
+.push-row .t-dev::before{content:"📹";font-size:12px}
+.push-row .t-desc{color:var(--text);font-size:13px}
+.push-row .t-desc.muted{color:var(--text2);font-style:italic;font-size:12px}
+.push-row .t-code{text-align:right;color:var(--text2);font-size:11px;font-family:Consolas,monospace;background:#0b0f14;padding:3px 8px;border-radius:4px;border:1px solid var(--border)}
+@media(max-width:680px){.push-row{grid-template-columns:1fr;gap:4px}.push-row .t-code{text-align:left;justify-self:start}}
+.card{animation:fadeIn .3s ease}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(--border);text-align:center}
+</style>
+</head>
+<body>
+<header><h1>老家监控 · 实时看板<span>AI 判人 + 分析结论</span></h1>
+  <nav class="tabs" id="mainTabs">
+    <button class="tab on" data-tab="live">📹 实时看板</button>
+    <button class="tab" data-tab="push">📨 萤石推送记录</button>
+  </nav>
+</header>
+<section class="live" id="page-live"><div class="live-card">
+  <div class="live-header"><h2>📹 实时画面</h2><div class="controls">
+    <select id="deviceSel"><option value="BK2385850">双溪村-CP1</option><option value="BG6569629">木山村前门-PD1</option></select>
+    <select id="modelSel"></select>
+  </div></div>
+  <div class="live-image">
+    <img id="liveImg" alt="实时画面">
+    <div class="live-overlay" id="liveOverlay"><div class="spinner" id="spinner"></div><span class="live-status" id="liveStatus">正在加载…</span></div>
+  </div>
+  <div class="live-actions">
+    <button class="btn primary" id="btnCapture">📸 实时抓图</button>
+    <button class="btn" id="btnAnalyze">🤖 AI分析</button>
+    <button class="btn warn" id="btnAlarm">🔍 查报警</button>
+    <button class="btn" id="btnToday">📷 查今日有人</button>
+    <button class="btn" id="btnRefresh">🔄 刷新历史</button>
+  </div>
+  <div class="result-box" id="resultBox"><div class="result-label">AI 分析结论</div><div id="resultBadges"></div><div class="result-text" id="resultText"></div></div>
+</div></section>
+<section class="history" id="page-history">
+  <div class="history-header"><h2>📋 历史报警记录</h2>
+    <div class="filters"><button class="fb on" data-p="all">全部</button><button class="fb" data-p="yes">有人</button><button class="fb" data-p="no">无人</button></div>
+    <div class="view-toggle"><button class="vb on" data-v="card">卡片</button><button class="vb" data-v="list">列表</button></div>
+    <span class="new-badge" id="newBadge">🔔 <span id="newCount">0</span> 条新报警，点击查看</span>
+    <span class="hint">手动刷新</span>
+  </div>
+  <div class="bulk-bar" id="bulkBar">
+    <span class="sel-info" id="selInfo">已选 0 条</span>
+    <button class="bulk-btn" id="btnSelectAll">全选</button>
+    <button class="bulk-btn" id="btnDeselectAll">取消全选</button>
+    <button class="bulk-btn primary" id="btnAnalyzeSel">分析选中</button>
+    <button class="bulk-btn danger" id="btnDeleteSel">删除选中</button>
+    <button class="bulk-btn danger" id="btnDeleteAll">全部删除</button>
+  </div>
+  <div class="cards" id="cards"></div>
+</section>
+<section class="push-page" id="page-push" style="display:none">
+  <div class="push-header">
+    <h2>📨 萤石云推送记录</h2>
+    <div class="push-actions">
+      <button class="btn" id="btnRefreshPush">🔄 刷新</button>
+      <span class="hint">webhook 收到的萤石云推送消息 · 按消息类型分组 · 数据源 data/push_log.json</span>
+    </div>
+  </div>
+  <div class="push-stats" id="pushStats"></div>
+  <div id="pushGroups"><div class="empty">加载中...</div></div>
+</section>
+<footer>局域网访问: http://电脑IP:8790 · 数据来自 monitor.js 报警事件</footer>
+<script>
+'use strict';
+var currentPerson = "all";
+var currentDevice = "BK2385850";
+var currentModel = "zhipu";
+var currentFile = "";
+
+function $(id){ return document.getElementById(id); }
+function esc(s){ return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+function setBusy(msg, spin){ $("liveOverlay").style.display = "flex"; $("spinner").style.display = spin ? "block" : "none"; $("liveStatus").textContent = msg; }
+function hideOverlay(){ $("liveOverlay").style.display = "none"; }
+
+// ---- 标签页切换 + 萤石推送记录 ----
+function switchTab(name){
+  $("page-live").style.display = name === "live" ? "block" : "none";
+  $("page-history").style.display = name === "live" ? "block" : "none";
+  $("page-push").style.display = name === "push" ? "block" : "none";
+  Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(b){ b.classList.toggle("on", b.getAttribute("data-tab") === name); });
+  if (name === "push") loadPushLog();
+}
+
+// 萤石推送记录的每条记录需要一个"含义说明"，避免出现"无内容描述"
+// 后端的 text 字段在 VMD/motiondetect 这类推送里本来就不存在（萤石端没传）
+// 这里按消息类型补一段人类能懂的描述
+const PUSH_TIPS = {
+  "motiondetect": "画面有移动触发（萤石端像素级侦测，不一定是人/动物）",
+  "VMD": "萤石 VMD 视频移动侦测：画面像素变化触发，不一定是人/动物",
+  "10002": "移动侦测：像素级移动事件",
+  "15504": "人形检测：萤石 AI 检测到人出现在画面中",
+  "15505": "区域入侵：在指定警戒区域内检测到活动",
+  "15506": "人形侦测：人形出现在画面中",
+  "device_online": "设备恢复连接",
+  "device_offline": "设备离线（可能断电或断网）",
+  "online": "设备恢复连接",
+  "offline": "设备离线（可能断电或断网）",
+  "pet_detection": "宠物侦测：检测到猫/狗等宠物",
+  "PetDetection": "宠物侦测：检测到猫/狗等宠物",
+  "intelligentDetection": "萤石智能侦测",
+  "SmartHumanDet": "萤石智能人形检测",
+  "storage_status": "存储卡/云存储状态变化",
+  "AI": "萤石 AI 算法推送",
+  "agent": "萤石 AI 智能体推送"
+};
+function pushDesc(type, text){
+  if (text && text.trim()) return { html: esc(text), muted: false };
+  var tip = PUSH_TIPS[type] || ("萤石推送 · 消息类型：" + type);
+  return { html: esc(tip), muted: true };
+}
+
+async function loadPushLog(){
+  var box = $("pushGroups");
+  var stats = $("pushStats");
+  box.innerHTML = '<div class="empty">加载中...</div>';
+  stats.innerHTML = "";
+  try {
+    var d = await (await fetch("/api/push-log?limit=300")).json();
+    if (!d.groups || !d.groups.length){ box.innerHTML = '<div class="empty">暂无萤石推送记录（webhook 还没收到过萤石推送）</div>'; return; }
+
+    // 统计
+    var totalCount = 0, deviceSet = {}, typeCount = d.groups.length;
+    for (var i = 0; i < d.groups.length; i++){
+      totalCount += d.groups[i].count;
+      for (var j = 0; j < d.groups[i].items.length; j++){
+        var dev = d.groups[i].items[j].devName || d.groups[i].items[j].serial;
+        if (dev) deviceSet[dev] = 1;
+      }
+    }
+    var deviceCount = Object.keys(deviceSet).length;
+    var allLogs = d.total || totalCount;
+    var firstTime = "—", lastTime = "—";
+    // 第一个分组的最后一条 = 最新一条；最后一个分组的 items 反向时间排，可能不是
+    if (d.groups.length && d.groups[0].items.length){
+      lastTime = d.groups[0].items[0].time || "—";
+      // 找最早一条
+      var minTime = null;
+      for (var g = 0; g < d.groups.length; g++){
+        var its = d.groups[g].items;
+        for (var k = 0; k < its.length; k++){
+          var t = its[k].time;
+          if (t && (!minTime || t < minTime)) minTime = t;
+        }
+      }
+      firstTime = minTime || "—";
+    }
+    stats.innerHTML =
+      '<div class="stat-tile"><div class="label">推送总数</div><div class="val accent">' + allLogs + '</div><div class="sub">近 ' + Math.min(300, allLogs) + ' 条已加载</div></div>' +
+      '<div class="stat-tile"><div class="label">消息类型</div><div class="val">' + typeCount + '</div><div class="sub">见下方分组</div></div>' +
+      '<div class="stat-tile"><div class="label">涉及设备</div><div class="val">' + deviceCount + '</div><div class="sub">台</div></div>' +
+      '<div class="stat-tile"><div class="label">最早 / 最新</div><div class="val" style="font-size:14px">' + esc(firstTime.slice(0,16)) + '</div><div class="sub">' + esc(lastTime.slice(0,16)) + '</div></div>';
+
+    // 分组渲染
+    var out = "";
+    for (var i = 0; i < d.groups.length; i++){
+      var g = d.groups[i];
+      out += '<div class="push-group">' +
+        '<div class="push-group-head" onclick="this.parentNode.classList.toggle(\'collapsed\')">' +
+          '<span class="toggle">▼</span>' +
+          '<span class="name">' + esc(g.name) + '<span class="code">' + esc(g.type) + '</span></span>' +
+          '<span class="count">' + g.count + ' 条</span>' +
+        '</div>' +
+        '<div class="push-rows">';
+      for (var j = 0; j < g.items.length; j++){
+        var it = g.items[j];
+        var desc = pushDesc(g.type, it.text);
+        out += '<div class="push-row">' +
+          '<div class="t-time">' + esc(it.time) + '</div>' +
+          '<div class="t-dev">' + esc(it.devName) + '</div>' +
+          '<div class="t-desc' + (desc.muted ? ' muted' : '') + '">' + desc.html + '</div>' +
+        '</div>';
+      }
+      out += '</div></div>';
+    }
+    box.innerHTML = out;
+  } catch(e){ box.innerHTML = '<div class="empty">加载失败: ' + esc(e.message) + '</div>'; }
+}
+
+async function loadModels(){
+  try {
+    var d = await (await fetch("/api/models")).json();
+    var sel = $("modelSel"); sel.innerHTML = "";
+    var list = d.models || [];
+    for (var i = 0; i < list.length; i++){
+      var opt = document.createElement("option");
+      opt.value = list[i].name; opt.textContent = list[i].label;
+      if (list[i].name === "zhipu") opt.selected = true;
+      sel.appendChild(opt);
+    }
+    currentModel = sel.value || "zhipu";
+  } catch(e){ console.error("模型加载失败", e); }
+}
+
+async function capture(force){
+  var btn = $("btnCapture"); btn.disabled = true;
+  $("liveImg").style.display = "none";
+  setBusy("正在抓图...", true);
+  try {
+    var d = await (await fetch("/api/capture?serial=" + currentDevice + (force ? "&force=1" : ""))).json();
+    if (d.error) throw new Error(d.error);
+    currentFile = d.file;
+    var img = $("liveImg");
+    img.onload = function(){ img.style.display = "block"; hideOverlay(); $("liveStatus").textContent = (d.cached ? "缓存画面 · " : "抓图成功 · ") + d.time; };
+    img.onerror = function(){ hideOverlay(); $("liveStatus").textContent = "图片加载失败"; };
+    img.src = d.url + "?t=" + Date.now();
+  } catch(e){ hideOverlay(); $("liveStatus").textContent = "抓图失败: " + e.message; }
+  finally { btn.disabled = false; }
+}
+
+async function analyze(){
+  var btn = $("btnAnalyze"); btn.disabled = true;
+  $("resultBox").classList.remove("show");
+  try {
+    if (!currentFile){ await capture(true); if (!currentFile) return; }
+    $("liveImg").style.display = "none";
+    setBusy("AI 分析中（" + currentModel + "）...", true);
+    var d = await (await fetch("/api/analyze?serial=" + currentDevice + "&model=" + currentModel + "&file=" + encodeURIComponent(currentFile))).json();
+    if (d.error) throw new Error(d.error);
+    var img = $("liveImg");
+    img.onload = function(){ img.style.display = "block"; hideOverlay(); };
+    img.src = "/captures/" + d.file + "?t=" + Date.now();
+    $("liveStatus").textContent = "分析完成 · " + d.time;
+    $("resultText").textContent = d.ai;
+    var b = d.person ? '<span class="badge person">有人</span>' : '<span class="badge nobody">无人</span>';
+    if (d.abnormal) b += '<span class="badge abn">异常</span>';
+    b += '<span class="badge prov">' + esc(d.provider) + "</span>";
+    $("resultBadges").innerHTML = b;
+    $("resultBox").classList.add("show");
+    loadHistory(true);
+  } catch(e){ hideOverlay(); $("liveStatus").textContent = "分析失败: " + e.message; }
+  finally { btn.disabled = false; }
+}
+
+async function checkTodayPerson(){
+  var btn = $("btnToday"); btn.disabled = true;
+  var oldHtml = btn.textContent; btn.textContent = "⏳ 查询中...";
+  setBusy("正在查询「" + getDeviceName(currentDevice) + "」今日人形报警...", true);
+  try {
+    var d = await (await fetch("/api/alarms/check-today?serial=" + encodeURIComponent(currentDevice))).json();
+    hideOverlay();
+    if (d.error){ $("liveStatus").textContent = "查询失败: " + d.error; return; }
+    var dv = (d.devices && d.devices[0]) || null;
+    var dvName = dv ? dv.name : getDeviceName(currentDevice);
+    if (d.count > 0){
+      $("liveStatus").textContent = "「" + dvName + "」今日新增 " + d.count + " 条人形报警（已写入历史报警记录）";
+      $("newCount").textContent = d.count;
+      $("newBadge").classList.add("show");
+    } else if (dv && dv.exist > 0){
+      $("liveStatus").textContent = "「" + dvName + "」今日 " + dv.exist + " 条人形报警已存在于历史记录，无新增";
+    } else {
+      $("liveStatus").textContent = "「" + dvName + "」今日无人形报警";
+    }
+  } catch(e){ hideOverlay(); $("liveStatus").textContent = "查询失败: " + e.message; }
+  finally { btn.disabled = false; btn.textContent = oldHtml; }
+}
+
+// 从 #deviceSel 的 <option> 反查设备名；选项改了/新增设备也兼容
+function getDeviceName(s){
+  var sel = $("deviceSel");
+  if (!sel) return s;
+  var opt = sel.querySelector('option[value="' + s + '"]');
+  return opt ? opt.textContent : s;
+}
+
+async function checkAlarms(){
+  var btn = $("btnAlarm"); btn.disabled = true;
+  var oldHtml = btn.textContent; btn.textContent = "⏳ 查询中...";
+  setBusy("正在查询全部设备报警...", true);
+  try {
+    var d = await (await fetch("/api/alarms/check")).json();
+    hideOverlay();
+    var total = 0, lastEvent = null, errs = [];
+    for (var i = 0; i < d.length; i++){
+      if (d[i].error){ errs.push(d[i].name + ": " + d[i].error); continue; }
+      total += d[i].count || 0;
+      if (d[i].events && d[i].events.length) lastEvent = d[i].events[d[i].events.length - 1];
+    }
+    if (total > 0){
+      if (lastEvent){
+        var img = $("liveImg");
+        img.onload = function(){ img.style.display = "block"; };
+        img.onerror = function(){ console.log("新报警图片加载失败: " + lastEvent.file); };
+        img.src = "/captures/" + lastEvent.file + "?t=" + Date.now();
+      }
+      $("newCount").textContent = total;
+      $("newBadge").classList.add("show");
+      $("liveStatus").textContent = "发现 " + total + " 条新报警，点击右上角查看" + (errs.length ? "（" + errs.join("；") + "）" : "");
+    } else if (errs.length){
+      $("liveStatus").textContent = "查询异常: " + errs.join("；");
+    } else {
+      $("liveStatus").textContent = "没有新增报警";
+    }
+  } catch(e){ hideOverlay(); $("liveStatus").textContent = "查询失败: " + e.message; }
+  finally { btn.disabled = false; btn.textContent = oldHtml; }
+}
+
+function renderCards(events){
+  var box = $("cards");
+  if (!events.length){ box.innerHTML = '<div class="empty">暂无报警记录</div>'; return; }
+  var out = "";
+  for (var i = 0; i < events.length; i++){
+    var e = events[i];
+    var badges = e.person ? '<span class="badge person">有人</span>' : '<span class="badge nobody">无人</span>';
+    if (e.abnormal) badges += '<span class="badge abn">异常</span>';
+    badges += '<span class="badge prov">' + esc(e.provider) + "</span>";
+    if (!e.pushed) badges += '<span class="badge skip">未推送</span>';
+    out += '<div class="card" data-file="' + encodeURIComponent(e.file) + '">' +
+      '<input type="checkbox" class="select-box" data-file="' + encodeURIComponent(e.file) + '">' +
+      '<img loading="lazy" src="/captures/' + encodeURIComponent(e.file) + '">' +
+      '<button class="del-btn" data-file="' + encodeURIComponent(e.file) + '">删除</button>' +
+      '<div class="card-meta"><span class="t">' + esc(e.time) + '</span><span class="dev">' + esc(e.name) + '</span><span class="title">' + esc(e.title) + "</span></div>" +
+      '<div class="card-badges">' + badges + "</div>" +
+      '<div class="card-ai">' + esc(e.ai) + "</div>" +
+      "</div>";
+  }
+  box.innerHTML = out;
+  updateBulkBar();
+}
+
+function loadHistory(silent){
+  var box = $("cards");
+  box.style.opacity = "0.4";  // 加载视觉反馈
+  fetch("/api/events?person=" + currentPerson + "&limit=100")
+    .then(function(r){ return r.json(); })
+    .then(function(d){ try { renderCards(d.events || []); } catch(e) { console.error(e); } box.style.opacity = "1"; })
+    .catch(function(e){
+      box.style.opacity = "1";
+      if (!silent){
+        console.error("历史加载失败", e);
+        var eb = document.getElementById("hint");
+        if (eb){ eb.textContent = "加载失败，请重试"; setTimeout(function(){ eb.textContent = "手动刷新"; }, 2000); }
+      }
+    });
+}
+
+async function deleteEvent(fileEnc){
+  try {
+    await fetch("/api/events/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file: decodeURIComponent(fileEnc) }) });
+    selectedFiles.delete(decodeURIComponent(fileEnc));
+    loadHistory(true);
+  } catch(e){ console.error("删除失败", e); }
+}
+
+// ---- 批量操作 ----
+var selectedFiles = new Set();
+function updateBulkBar(){
+  var bar = $("bulkBar"), info = $("selInfo");
+  if (selectedFiles.size > 0){ bar.classList.add("show"); info.textContent = "已选 " + selectedFiles.size + " 条"; }
+  else { bar.classList.remove("show"); }
+  // 同步卡片选中样式
+  Array.prototype.forEach.call(document.querySelectorAll(".card"), function(card){
+    var f = card.getAttribute("data-file");
+    card.classList.toggle("selected", f && selectedFiles.has(decodeURIComponent(f)));
+  });
+}
+async function deleteAllEvents(){
+  if (!confirm("确定删除全部 " + $("cards").querySelectorAll(".card").length + " 条记录吗？此操作不可恢复！")) return;
+  try {
+    await fetch("/api/events/delete-all", { method: "POST" });
+    selectedFiles.clear();
+    loadHistory(true);
+  } catch(e){ console.error("全部删除失败", e); }
+}
+async function deleteSelected(){
+  if (selectedFiles.size === 0) return;
+  if (!confirm("确定删除选中的 " + selectedFiles.size + " 条记录吗？")) return;
+  try {
+    await fetch("/api/events/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ files: Array.from(selectedFiles) }) });
+    selectedFiles.clear();
+    loadHistory(true);
+  } catch(e){ console.error("删除选中失败", e); }
+}
+
+function checkNewEvents(){
+  fetch("/api/events/changed")
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+      if (d.hasNew && d.newCount > 0){ $("newCount").textContent = d.newCount; $("newBadge").classList.add("show"); }
+    }).catch(function(){});
+}
+setInterval(checkNewEvents, 30000);
+
+$("btnCapture").addEventListener("click", function(){ capture(true); });
+Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(b){
+  b.addEventListener("click", function(){ switchTab(b.getAttribute("data-tab")); });
+});
+$("btnRefreshPush").addEventListener("click", loadPushLog);
+$("btnAnalyze").addEventListener("click", analyze);
+$("btnAlarm").addEventListener("click", checkAlarms);
+$("btnToday").addEventListener("click", checkTodayPerson);
+$("btnRefresh").addEventListener("click", function(){ $("newBadge").classList.remove("show"); loadHistory(false); });
+$("newBadge").addEventListener("click", function(){ this.classList.remove("show"); currentPerson="all"; Array.prototype.forEach.call(document.querySelectorAll(".fb"),function(b){b.classList.remove("on")}); var a=document.querySelector(".fb[data-p=all]"); if(a) a.classList.add("on"); setTimeout(function(){ loadHistory(false); }, 100); });
+$("deviceSel").addEventListener("change", function(){
+  currentDevice = this.value; currentFile = "";
+  $("resultBox").classList.remove("show");
+  capture(false);
+});
+$("modelSel").addEventListener("change", function(){ currentModel = this.value; });
+Array.prototype.forEach.call(document.querySelectorAll(".vb"), function(btn){
+  btn.addEventListener("click", function(){
+    Array.prototype.forEach.call(document.querySelectorAll(".vb"), function(b){ b.classList.remove("on"); });
+    btn.classList.add("on");
+    $("cards").classList.toggle("list-view", btn.getAttribute("data-v") === "list");
+  });
+});
+Array.prototype.forEach.call(document.querySelectorAll(".fb"), function(btn){
+  btn.addEventListener("click", function(){
+    currentPerson = btn.getAttribute("data-p");
+    Array.prototype.forEach.call(document.querySelectorAll(".fb"), function(b){ b.classList.remove("on"); });
+    btn.classList.add("on");
+    loadHistory(false);
+  });
+});
+$("cards").addEventListener("click", function(ev){
+  var t = ev.target;
+  if (t && t.classList && t.classList.contains("del-btn")) {
+    if (confirm("确定删除这条记录吗？")) deleteEvent(t.getAttribute("data-file"));
+    return;
+  }
+  // 复选框点击
+  if (t && t.classList && t.classList.contains("select-box")){
+    var f = decodeURIComponent(t.getAttribute("data-file"));
+    if (t.checked) selectedFiles.add(f); else selectedFiles.delete(f);
+    updateBulkBar();
+    return;
+  }
+  // 点击卡片加载该记录的图片到实时区，方便点"AI分析"
+  var card = t.closest(".card");
+  if (card){
+    var img = card.querySelector("img");
+    if (img){
+      currentFile = decodeURIComponent(img.getAttribute("src").replace("/captures/", "")).replace(/\?t=.*/, "");
+      var liveImg = $("liveImg");
+      liveImg.src = img.getAttribute("src");
+      liveImg.style.display = "block";
+      $("resultBox").classList.remove("show");
+      hideOverlay();
+      $("liveStatus").textContent = "已加载历史记录，可点击AI分析";
+    }
+  }
+});
+
+// 批量操作按钮
+$("btnSelectAll").addEventListener("click", function(){
+  Array.prototype.forEach.call(document.querySelectorAll(".select-box"), function(cb){ cb.checked = true; selectedFiles.add(decodeURIComponent(cb.getAttribute("data-file"))); });
+  updateBulkBar();
+});
+$("btnDeselectAll").addEventListener("click", function(){
+  Array.prototype.forEach.call(document.querySelectorAll(".select-box"), function(cb){ cb.checked = false; });
+  selectedFiles.clear();
+  updateBulkBar();
+});
+$("btnDeleteSel").addEventListener("click", deleteSelected);
+$("btnDeleteAll").addEventListener("click", deleteAllEvents);
+
+loadModels();
+loadHistory(false);
+capture(false);
+</script>
+</body>
+</html>
