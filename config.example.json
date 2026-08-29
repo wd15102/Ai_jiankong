@@ -8,12 +8,14 @@
     {
       "name": "双溪村-CP1云台机",
       "serial": "BK2385850",
-      "watch": true
+      "watch": true,
+      "ptz": true
     },
     {
       "name": "木山村前门-PD1",
       "serial": "BG6569629",
-      "watch": true
+      "watch": true,
+      "ptz": true
     },
     {
       "name": "示例-已下线设备",
@@ -22,7 +24,7 @@
       "hidden": true
     }
   ],
-  "_devices说明": "watch=true 才纳入监控；hidden=true 在看板和推送中完全隐藏（用于淘汰的老设备）",
+  "_devices说明": "watch=true 才纳入监控；hidden=true 在看板和推送中完全隐藏（用于淘汰的老设备）；ptz=true 的设备在直播页显示云台方向盘(上/下/左/右)",
 
   "watchIntervalSec": 300,
 
@@ -92,19 +94,21 @@
   "_wxGroups说明": "push=可按哪个村子推送(双溪村/木山村/all/none)；query=可查询哪个村子(status=仅设备状态)；blockMushanMenu=是否拦截木山村按钮",
 
   "ezvizPush": {
-    "secret": "萤石推送回调的secret",
-    "strictVerify": false
+    "secret": "萤石推送回调的secret（必填！不填则 /ezviz/push 不校验签名，任何人可伪造「人员活动」家族告警）",
+    "strictVerify": true
   },
 
   "webapp": {
     "enabled": true,
-    "port": 8790
+    "port": 8790,
+    "apiToken": "远程访问看板所需的令牌（留空则自动生成并写入 data/webapp_token.txt）。本地 127.0.0.1 访问免令牌；非本地访问需在 URL 加 ?token=xxx"
   },
 
   "wxServer": {
     "enabled": true,
     "port": 8787,
     "token": "自定义一个回调Token，需与公众号后台一致",
+    "shutdownToken": "远程一键关服令牌（留空则远程禁止关闭，仅本机可关；防公网隧道被恶意关服）",
     "appId": "公众号AppID",
     "appSecret": "公众号AppSecret",
     "commands": [

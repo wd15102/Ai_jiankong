@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 萤石云摄像头 AI 监控 · 零依赖 CLI（Node >= 18，运行于长沙侧，无需公网IP）
+// 萤石云摄像头 AI 监控 · 零框架依赖 CLI（仅 jimp 用于缩略图, Node >= 18，运行于长沙侧，无需公网IP）
 // 用法:
 //   node monitor.js status            查看 accessToken 与账号下所有设备状态
 //   node monitor.js capture [序列号]   抓一张图存入 captures/
@@ -55,11 +55,24 @@ function saveState(s) {
 function recordEvent(ev) {
   const f = path.join(ROOT, "data", "events.json");
   let arr = [];
-  try { arr = JSON.parse(fs.readFileSync(f, "utf8")); if (!Array.isArray(arr)) arr = []; } catch (e) { arr = []; }
+  try {
+    arr = JSON.parse(fs.readFileSync(f, "utf8"));
+    if (!Array.isArray(arr)) arr = [];
+  } catch (e) {
+    // 解析失败(并发写被打断): 损坏文件留档再从空开始, 避免静默丢失全部历史
+    try { if (fs.existsSync(f) && fs.statSync(f).size > 0) fs.copyFileSync(f, f + ".corrupt." + Date.now()); } catch (e2) {}
+    arr = [];
+  }
   arr.push(ev);
   if (arr.length > 500) arr = arr.slice(-500);
   fs.mkdirSync(path.dirname(f), { recursive: true });
-  fs.writeFileSync(f, JSON.stringify(arr, null, 1));
+  const content = JSON.stringify(arr, null, 1);
+  // 先写临时文件再改名, 避免webhook/看板读到写了一半的内容; 改名被占用时退回直写
+  try {
+    fs.writeFileSync(f + ".tmp", content);
+    try { fs.renameSync(f + ".tmp", f); }
+    catch (e3) { fs.writeFileSync(f, content); fs.unlinkSync(f + ".tmp"); }
+  } catch (e4) { console.log("  [警告] events.json 写入失败: " + e4.message.slice(0, 80)); }
 }
 
 // AI 全渠道失败的通知限频：5分钟最多推一次，避免刷屏
@@ -79,6 +92,9 @@ function judgePerson(content) {
   const m = c.match(/【(有人|无人)】/);
   let person;
   if (m) person = m[1] === "有人";
+  else if (/^\s*无人/.test(c.trim()) || /【无人】/.test(c)) {
+    person = false; // 行首"无人"(config自定义prompt不带括号)优先判定: 防"未见人员活动"误命中下面的关键词
+  }
   else person = /(有人|人员活动|检测到人|出现人|一个人)/.test(c);
   const abnormal = /(异常|需关注|注意|陌生|闯入)/.test(c) && !/无异常/.test(c);
   return { person: person === true, abnormal: abnormal };
@@ -119,7 +135,8 @@ async function analyzeAndPush(serial, file, extraTitle, opts) {
   }
 
   if (shouldPush) {
-    const pr = await push(cfg.push, (extraTitle || "摄像头动态") + " - " + devName(serial), conclusion, { imageFile: file });
+    // 带上serial: 推送通道按设备所属村做分组过滤(双溪村组只收双溪村/同事组不推)
+    const pr = await push(cfg.push, (extraTitle || "摄像头动态") + " - " + devName(serial), conclusion, { imageFile: file, serial: serial });
     if (!pr.skipped) console.log("  推送: " + (pr.ok ? "成功" : "失败 " + (pr.reason || "")));
   } else {
     console.log("  （未推送）");

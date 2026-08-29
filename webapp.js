@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-// 电脑 Web 报警看板 + 实时控制（零依赖, Node >= 18）
+// 电脑 Web 报错看板 + 实时控制（零框架依赖, 仅 jimp 用于缩略图, Node >= 18）
 // 运行: node webapp.js  ->  浏览器打开 http://localhost:8790
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const crypto = require("crypto");
 const { createClient } = require("./lib/ys7");
 const { analyzeImage } = require("./lib/ai");
 
@@ -12,6 +13,41 @@ const ROOT = __dirname;
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "config.json"), "utf8"));
 const PORT = ((cfg.webapp || {}).port) || 8790;
 const VERSION = "2026-08-25.25";
+
+// ---------- Web 看板鉴权：防止公网隧道下被未授权抓图/删记录/一键关服 ----------
+// 本地 127.0.0.1 访问免令牌（同机/SSH 转发均视为本地）；非本地访问敏感接口必须带 ?token=xxx
+// token 来源：config.json webapp.apiToken；未配置则自动生成并持久化到 data/webapp_token.txt
+function resolveApiToken() {
+  const fromCfg = (cfg.webapp && cfg.webapp.apiToken) || "";
+  if (fromCfg) return fromCfg;
+  const tpath = path.join(ROOT, "data", "webapp_token.txt");
+  try { if (fs.existsSync(tpath)) { const t = fs.readFileSync(tpath, "utf8").trim(); if (t) return t; } } catch (e) {}
+  try {
+    const t = crypto.randomBytes(16).toString("hex");
+    fs.mkdirSync(path.dirname(tpath), { recursive: true });
+    fs.writeFileSync(tpath, t);
+    console.log("[鉴权] webapp.apiToken 未配置，已自动生成并持久化到 data/webapp_token.txt");
+    console.log("       远程访问看板请在地址后加 ?token=" + t + "（本地 127.0.0.1 无需令牌）");
+    return t;
+  } catch (e) { return ""; }
+}
+const API_TOKEN = resolveApiToken();
+const PROTECTED_PATHS = ["/api/capture", "/api/analyze", "/api/alarms/check", "/api/alarms/check-today", "/api/events/delete", "/api/events/delete-all"];
+function isLoopback(req) {
+  const a = req.socket && req.socket.remoteAddress;
+  return a === "127.0.0.1" || a === "::1" || a === "::ffff:127.0.0.1";
+}
+// 返回 true 表示已被拦截（已回 401/403，调用方应 return）
+function tokenGate(req, u, res) {
+  const p = u.pathname;
+  const sensitive = PROTECTED_PATHS.indexOf(p) >= 0 || p === "/__shutdown" || p === "/__who";
+  if (!sensitive) return false;
+  if (isLoopback(req)) return false;
+  if (API_TOKEN && u.searchParams.get("token") === API_TOKEN) return false;
+  sendJson(res, 401, { error: "未授权：非本地访问需在 URL 携带 ?token=<webapp.apiToken>" });
+  return true;
+}
+
 const PID_FILE = path.join(ROOT, "data", "webapp.pid");
 const client = createClient(cfg);
 
@@ -59,15 +95,27 @@ const PAGE = fs.existsSync(path.join(ROOT, "webapp.html"))
   : "<h1>webapp.html 未找到</h1>";
 
 function loadEvents() {
+  const f = path.join(ROOT, "data", "events.json");
   try {
-    const arr = JSON.parse(fs.readFileSync(path.join(ROOT, "data", "events.json"), "utf8"));
+    const arr = JSON.parse(fs.readFileSync(f, "utf8"));
     return Array.isArray(arr) ? arr : [];
-  } catch (e) { return []; }
+  } catch (e) {
+    // 解析失败(并发写被打断): 损坏文件留档再返回空, 避免静默丢失全部历史
+    try { if (fs.existsSync(f) && fs.statSync(f).size > 0) fs.copyFileSync(f, f + ".corrupt." + Date.now()); } catch (e2) {}
+    return [];
+  }
 }
 function saveEvents(arr) {
   if (arr.length > 500) arr = arr.slice(-500);
   fs.mkdirSync(path.join(ROOT, "data"), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, "data", "events.json"), JSON.stringify(arr, null, 1));
+  const f = path.join(ROOT, "data", "events.json");
+  const content = JSON.stringify(arr, null, 1);
+  // 先写临时文件再改名, 避免其他服务读到写了一半的内容; 改名被占用时退回直写
+  try {
+    fs.writeFileSync(f + ".tmp", content);
+    try { fs.renameSync(f + ".tmp", f); }
+    catch (e) { fs.writeFileSync(f, content); fs.unlinkSync(f + ".tmp"); }
+  } catch (e2) {}
 }
 function recordEvent(ev) { const arr = loadEvents(); arr.push(ev); saveEvents(arr); }
 function deleteEventByFile(file) { saveEvents(loadEvents().filter(function(e){ return e.file !== file; })); return true; }
@@ -75,7 +123,8 @@ function deleteEventByFile(file) { saveEvents(loadEvents().filter(function(e){ r
 function judgePerson(content) {
   const c = String(content || "");
   const m = c.match(/【(有人|无人)】/);
-  let person = m ? (m[1] === "有人") : /(有人|人员活动|检测到人|出现人|一个人)/.test(c);
+  // 行首"无人"(config自定义prompt不带括号)优先判定: 防"未见人员活动"误命中关键词
+  let person = m ? (m[1] === "有人") : (/^\s*无人/.test(c.trim()) || /【无人】/.test(c) ? false : /(有人|人员活动|检测到人|出现人|一个人)/.test(c));
   const negated = /(无异常|没有.*?异常|看不到.*?异常|未发现.*?异常)/.test(c);
   const abnormal = /(异常|需关注|注意|陌生|闯入)/.test(c) && !negated;
   return { person: person, abnormal: abnormal };
@@ -351,6 +400,7 @@ function makeHandler() {
   return function (req, res) {
     const u = new URL(req.url, "http://localhost");
     const p = u.pathname;
+    if (tokenGate(req, u, res)) return;
     if (p === "/__who") { sendJson(res, 200, { app: APP_NAME, version: VERSION, pid: process.pid }); return; }
     if (p === "/__shutdown") {
       if (u.searchParams.get("pid") === String(process.pid)) {

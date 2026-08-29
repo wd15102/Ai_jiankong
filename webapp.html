@@ -182,6 +182,35 @@ footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(-
 <footer>局域网访问: http://电脑IP:8790 · 数据来自 monitor.js 报警事件</footer>
 <script>
 'use strict';
+// ---- 看板远程鉴权：把 token 自动附带到需要鉴权的操作请求上 ----
+// token 来源：URL 的 ?token=xxx（优先，会存到 localStorage）或 localStorage 中已保存的值
+// 本地 127.0.0.1 访问无需 token；非本地访问若后端返回 401，请在地址后加 ?token=xxx
+(function(){
+  var TOKEN = null;
+  try {
+    var q = new URLSearchParams(location.search);
+    var t = q.get("token");
+    if (t) { TOKEN = t; try { localStorage.setItem("webapp_token", t); } catch(e){} }
+    else { try { TOKEN = localStorage.getItem("webapp_token"); } catch(e){} }
+  } catch(e){}
+  var PROTECTED = ["/api/capture","/api/analyze","/api/alarms/check","/api/alarms/check-today","/api/events/delete","/api/events/delete-all"];
+  if (TOKEN) {
+    var _orig = window.fetch ? window.fetch.bind(window) : null;
+    if (_orig) {
+      window.fetch = function(url, opts){
+        opts = opts || {};
+        try {
+          var u = new URL(url, location.href);
+          if (u.origin === location.origin && PROTECTED.indexOf(u.pathname) >= 0) {
+            u.search += (u.search ? "&" : "?") + "token=" + encodeURIComponent(TOKEN);
+            url = u.pathname + u.search + u.hash;
+          }
+        } catch(e){}
+        return _orig(url, opts);
+      };
+    }
+  }
+})();
 var currentPerson = "all";
 var currentDevice = "BK2385850";
 var currentModel = "zhipu";

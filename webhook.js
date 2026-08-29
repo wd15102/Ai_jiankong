@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 公众号「看家」被动查询服务 · 零依赖（Node >= 18）
+// 公众号「看家」被动查询服务 · 零框架依赖（仅 jimp 用于缩略图, Node >= 18）
 // 用法: 先开内网穿透指向本服务端口, 再到公众号后台「设置与开发->基本配置->服务器配置」启用:
 //   URL = 穿透公网地址   Token = config.json 里 wxServer.token   消息加解密 = 明文模式
 // 家人关注公众号后发送【看家】/【门口】等关键词, 几秒内收到对应摄像头的现场照片
@@ -17,6 +17,12 @@ const PORT = WX.port || 8787;
 const VERSION = "2026-08-27.30"; // +图片加速:萤石CDN原图优先(picEz)+隧道兜底(onerror切pic)+/captures强缓存7天immutable+加载占位 // 图文卡片(news)推送+今日无数据回退昨日; token限流自动重试2s // 今日活动/today时间线页+微信推链接; 照片md5去重; H265-fMP4直播; 验签宽松; token自愈
 const PID_FILE = path.join(ROOT, "data", "webhook.pid");
 const client = createClient(cfg);
+
+// 判断请求是否来自本机回环（127.0.0.1 / ::1）。来自公网隧道的请求不算本地。
+function isLoopback(req) {
+  const a = req.socket && req.socket.remoteAddress;
+  return a === "127.0.0.1" || a === "::1" || a === "::ffff:127.0.0.1";
+}
 
 // ---------- 自愈启动：HTTP 握手识别并接管旧实例（零子进程） ----------
 const APP_NAME = "webhook";
@@ -180,13 +186,25 @@ function logPush(entry) {
   } catch (e) {}
 }
 function loadEventsArr() {
-  try { const a = JSON.parse(fs.readFileSync(path.join(ROOT, "data", "events.json"), "utf8")); return Array.isArray(a) ? a : []; }
-  catch (e) { return []; }
+  const f = path.join(ROOT, "data", "events.json");
+  try { const a = JSON.parse(fs.readFileSync(f, "utf8")); return Array.isArray(a) ? a : []; }
+  catch (e) {
+    // 解析失败(常见于并发写被打断): 把损坏文件留档再返回空, 避免静默丢失全部历史
+    try { if (fs.existsSync(f) && fs.statSync(f).size > 0) fs.copyFileSync(f, f + ".corrupt." + Date.now()); } catch (e2) {}
+    return [];
+  }
 }
 function saveEventsArr(arr) {
   if (arr.length > 500) arr = arr.slice(-500);
   fs.mkdirSync(path.join(ROOT, "data"), { recursive: true });
-  fs.writeFileSync(path.join(ROOT, "data", "events.json"), JSON.stringify(arr, null, 1));
+  const f = path.join(ROOT, "data", "events.json");
+  const content = JSON.stringify(arr, null, 1);
+  // 先写临时文件再改名: 读方要么看到完整旧文件要么完整新文件, 不会读到写了一半的内容
+  try {
+    fs.writeFileSync(f + ".tmp", content);
+    try { fs.renameSync(f + ".tmp", f); }
+    catch (e) { fs.writeFileSync(f, content); fs.unlinkSync(f + ".tmp"); } // 改名被占用(Windows并发读)时退回直写
+  } catch (e2) { console.log("[事件] events.json 写入失败: " + e2.message.slice(0, 80)); }
 }
 function pickStr(obj, keys) {
   for (const k of keys) { if (obj && obj[k] !== undefined && obj[k] !== null && obj[k] !== "") return obj[k]; }
@@ -194,11 +212,16 @@ function pickStr(obj, keys) {
 }
 function verifyEzvizSign(bodyRaw, headers) {
   const P = cfg.ezvizPush || {};
-  if (!P.secret) return true; // 未配密钥则不校验
+  // 未配置密钥：开发期放行，但必须给出醒目安全警告——此时任何人都能伪造家族告警
+  if (!P.secret) {
+    console.warn("[安全告警] ezvizPush.secret 未配置，/ezviz/push 不做签名校验，攻击者可伪造「人员活动」家族告警！请尽快在 config.json 填入萤石推送密钥并重启。");
+    return true;
+  }
+  // 已配置密钥：必须携带且匹配签名，否则一律拒绝（杜绝伪造）
   const h = {};
   for (const k in headers) h[String(k).toLowerCase()] = String(headers[k]);
   const got = h["x-ezviz-signature"] || h["signature"] || h["x-signature"] || "";
-  if (!got) return !P.strictVerify; // 无签名头：宽松模式放行并记录
+  if (!got) return false; // 配了密钥就必须带签名，缺签名直接拒绝
   const cands = [
     crypto.createHash("md5").update(P.secret + bodyRaw).digest("hex"),
     crypto.createHash("md5").update(bodyRaw + P.secret).digest("hex"),
@@ -211,8 +234,8 @@ async function handleEzvizPush(bodyRaw, headers) {
   const t = Date.now();
   logPush({ ts: t, time: new Date(t).toLocaleString("zh-CN",{hour12:false}), headers: headers, body: String(bodyRaw).slice(0, 2500) });
   if (!verifyEzvizSign(bodyRaw, headers)) {
-    if ((cfg.ezvizPush || {}).strictVerify === true) { console.log("[萤石推送] 签名校验失败，已丢弃(strictVerify)"); return; }
-    console.log("[萤石推送] 签名不匹配(宽松模式继续处理, 如需严格校验配strictVerify:true)");
+    console.log("[萤石推送] 签名校验失败，已丢弃（拒绝伪造/未授权推送）");
+    return;
   }
   let p = null;
   try { p = JSON.parse(bodyRaw); } catch (e) {}
@@ -277,7 +300,6 @@ async function handleEzvizPush(bodyRaw, headers) {
       catch (e) { console.log("[萤石推送] 截图下载失败: " + e.message); fname = ""; }
     }
     if (!fname) {
-      try { await (async function(){ })(); } catch (e) {}
       try {
         const r = await client.capture(serial);
         if (r.code === "200") {
@@ -302,7 +324,8 @@ async function handleEzvizPush(bodyRaw, headers) {
     if (fname && (cfg.ai || {}).enabled && (cfg.ai || {}).autoAnalyze !== false) {
       try { aiTxt = await analyzeAndStore(fname); } catch (eAi) { console.log("[AI] 自动判读失败: " + eAi.message); }
     }
-    const noPerson = /【无人】/.test(aiTxt);
+    // 无人判定: 兼容【无人】(默认prompt)和行首"无人"(config自定义prompt不带括号), 否则无人事件也会被标成"有人员活动"误推
+    const noPerson = /【无人】/.test(aiTxt) || /^\s*无人/.test(String(aiTxt).trim());
     // 语义化标题: 含设备名, 去掉"⚠️老家"等冗余前缀; 称呼(亲爱的东哥等)由 dear() 在发送时自动加在 first 前
     let firstLine;
     if (aiTxt) {
@@ -358,9 +381,10 @@ async function analyzeImageAI(file) {
   return "";
 }
 async function analyzeAndStore(file) {
-  if (!file || _aiFlight[file]) return "";
+  if (!file) return "";
   const absPath = path.isAbsolute(file) ? file : path.join(ROOT, "captures", file);
   const baseName = path.basename(absPath);
+  if (_aiFlight[baseName]) return "";
   _aiFlight[baseName] = true;
   try {
     const txt = await analyzeImageAI(absPath);
@@ -592,6 +616,15 @@ function loadThrottle() {
   return _throttleCache;
 }
 function saveThrottle(map) { try { fs.writeFileSync(path.join(ROOT, "data", "push_throttle.json"), JSON.stringify(map)); } catch (e) {} }
+// 推送审计: 每次模板推送的结果都落盘(成功/失败/失败errcode)，控制台窗口丢了也有据可查
+function auditPush(serial, ok, attempted, skipped, scoped, errs) {
+  try {
+    const line = "[" + new Date().toLocaleString("zh-CN", { hour12: false }) + "] serial=" + (serial || "-") +
+      " 成功=" + ok + "/" + attempted + " 节流跳过=" + skipped + " 分组过滤=" + scoped +
+      (errs.length ? " 失败详情=" + Array.from(new Set(errs)).join(",") : "") + "\n";
+    fs.appendFileSync(path.join(ROOT, "data", "push_audit.txt"), line);
+  } catch (e) {}
+}
 
 // ---------- 微信测试号 主动推送（模板消息，无48小时窗口限制） ----------
 // config.json: "wxTest": { "enabled": true, "appId":"", "appSecret":"", "templateId":"",
@@ -618,7 +651,8 @@ async function pushTestTemplate(first, timeStr, deviceStr, remark, detailUrl, fo
     const openids = (uj.data && uj.data.openid) || [];
     const serialScope = opt.serial;   // 仅向可接收该设备的 openid 推送(分组)
     const allowOid = opt.allowOid;    // 仅向白名单 openid 推送(日报按组分发)
-    let ok = 0, skipped = 0, scoped = 0;
+    let ok = 0, skipped = 0, scoped = 0, attempted = 0;
+    const errs = [];
     for (const oid of openids) {
       // 分组白名单(日报按组分发): 不在名单直接跳过
       if (allowOid && !allowOid(oid)) { scoped++; continue; }
@@ -626,6 +660,7 @@ async function pushTestTemplate(first, timeStr, deviceStr, remark, detailUrl, fo
       if (serialScope && !canPushTo(oid, serialScope)) { scoped++; continue; }
       // 2小时内已推过该微信：本窗口内的新报警仅记录不推送，避免轰炸
       if (throttle && (now - (throttle[oid] || 0)) < PUSH_THROTTLE_MS) { skipped++; continue; }
+      attempted++;
       for (let att = 0; att < 2; att++) {
         try {
           const res = await fetch("https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=" + token, {
@@ -645,14 +680,23 @@ async function pushTestTemplate(first, timeStr, deviceStr, remark, detailUrl, fo
           });
           const rj = await res.json();
           if (rj.errcode === 0) { ok++; if (throttle) { throttle[oid] = now; } break; }
+          errs.push(oid.slice(0, 8) + ":" + rj.errcode);
           console.log("[测试号推送] 失败 openid=" + oid.slice(0, 8) + "... err=" + rj.errcode + " " + rj.errmsg);
           if (att === 0 && isTokErr(rj.errcode)) { try { await new Promise(function(r){setTimeout(r,2000)}); token = await wxTestToken(true); continue; } catch (e2) { break; } }
           break;
-        } catch (e) { break; }
+        } catch (e) { errs.push(oid.slice(0, 8) + ":EXC"); break; }
       }
     }
     if (openids.length) console.log("[测试号推送] 已推送 " + ok + "/" + openids.length + " 位关注者" + (skipped ? "，限频跳过 " + skipped + " 位(2h窗口内)" : "") + (scoped ? "，分组过滤 " + scoped + " 位" : ""));
+    auditPush(serialScope, ok, attempted, skipped, scoped, errs);
     if (throttle) saveThrottle(throttle);
+    // 该设备本应送达却一个都没成功(网络/token抖动)：60秒后自动重试一次(仍受2h节流约束,重试本身不再递归)
+    if (!force && !opt._isRetry && attempted > 0 && ok === 0) {
+      console.log("[测试号推送] 全部失败，60秒后自动重试一次");
+      setTimeout(function () {
+        pushTestTemplate(first, timeStr, deviceStr, remark, detailUrl, force, Object.assign({}, opt, { _isRetry: true })).catch(function () {});
+      }, 60e3);
+    }
     return ok;
   } catch (e) {
     console.log("[测试号推送] 异常: " + e.message.slice(0, 120));
@@ -800,21 +844,53 @@ if ((cfg.ai || {}).enabled && (cfg.ai || {}).autoAnalyze !== false && aiProvider
 }
 
 // ---------- 监控直播 ----------
+// 各设备的H264可用性探测缓存: { serial -> { h265Only: bool, at: ts } }，10分钟过期
+// H264流可被微信内置浏览器直接播放; H265流多数手机微信放不了, /live页会提示"在浏览器打开"
+const _h264Probe = {};
+// 云台限频: serial -> 上次操作时间戳
+const _ptzLast = {};
 const LIVE_PAGE_HTML = "<!doctype html><html><head><meta charset=\"utf-8\">" +
   "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,user-scalable=no\">" +
   "<title>家庭监控直播</title>" +
   "<link rel=\"stylesheet\" href=\"/ezui/style/css.css\">" +
   "<style>body{margin:0;background:#111;color:#eee;font-family:-apple-system,sans-serif;text-align:center}" +
+  "#stage{position:relative;width:100%}" +
   "#app{width:100%;height:56vw;max-height:70vh;background:#000}" +
-  "#tip{padding:14px;font-size:15px;color:#9cf}</style></head><body>" +
-  "<div id=\"app\"></div><div id=tip>正在连接直播...</div>" +
+  "#pad{position:absolute;right:12px;top:50%;transform:translateY(-50%);z-index:6;display:none;flex-direction:column;gap:8px;align-items:center}" +
+  "#pad button{width:46px;height:46px;border-radius:50%;border:1px solid rgba(255,255,255,.4);background:rgba(0,0,0,.5);color:#fff;font-size:15px;-webkit-tap-highlight-color:transparent}" +
+  "#pad button:active{background:rgba(47,111,237,.8)}" +
+  "#tip{padding:14px;font-size:15px;color:#9cf}" +
+  ".bar{margin:10px auto;max-width:88%;padding:10px 14px;background:#3d3407;color:#ffd54a;border-radius:10px;font-size:13px;line-height:1.8;text-align:left}" +
+  "#fail{display:none;margin:16px auto;max-width:88%;background:#1b2130;border:1px solid #2a3448;border-radius:12px;padding:18px;font-size:15px;line-height:2.1;text-align:left}" +
+  "#fail b{color:#ffd54a}" +
+  "button.act{margin:4px 6px 0 0;padding:7px 16px;border:0;border-radius:8px;background:#2f6fed;color:#fff;font-size:14px}" +
+  "#copybar{position:fixed;left:0;right:0;bottom:0;padding:10px;background:#161a20;font-size:13px;color:#9ab;border-top:1px solid #262c36}" +
+  "</style></head><body>" +
+  "<div id=\"h265bar\" class=\"bar\" style=\"display:none\">⚠️ 该摄像头直播是 <b>H265</b> 画面，多数手机的微信放不了。<br>点右上角「···」→「<b>在浏览器打开</b>」即可观看。</div>" +
+  "<div id=\"stage\"><div id=\"app\"></div>" +
+  "<div id=\"pad\"><button onclick=\"ptzTurn('up')\">▲</button><div style=\"display:flex;gap:8px\"><button onclick=\"ptzTurn('left')\">◀</button><button onclick=\"ptzTurn('right')\">▶</button></div><button onclick=\"ptzTurn('down')\">▼</button></div>" +
+  "</div><div id=tip>正在连接直播...</div>" +
+  "<div id=\"fail\">😢 微信内无法播放此直播<br><b>两种方法观看：</b><br>① 点右上角「···」→ 选择「<b>在浏览器打开</b>」<br>② 或复制链接粘贴到手机浏览器打开<br><button class=\"act\" onclick=\"copyLink(this)\">📋 复制链接</button><span id=\"copied\" style=\"display:none;color:#6f6\">已复制 ✓</span></div>" +
+  "<script>function copyLink(btn){var t=document.createElement('textarea');t.value=location.href;t.style.position='fixed';t.style.opacity='0';document.body.appendChild(t);t.focus();t.select();var ok=false;try{ok=document.execCommand('copy')}catch(e){}document.body.removeChild(t);if(ok){var sp=document.getElementById('copied');if(sp)sp.style.display='inline';if(btn){btn.textContent='已复制 ✓';setTimeout(function(){btn.textContent='📋 复制链接'},2000);}}else{prompt('长按全选并复制本链接:',location.href);}}</scr" + "ipt>" +
   "<script src=\"/ezui/index.umd.js\"></scr" + "ipt>" +
   "<script>var qs=new URLSearchParams(location.search),s=qs.get('serial')||'',tip=document.getElementById('tip');" +
+  "var isWX=/MicroMessenger/i.test(navigator.userAgent);" +
+  "function showFail(){if(!isWX){tip.textContent='画面加载慢或失败，可刷新重试';return}document.getElementById('fail').style.display='block';tip.textContent='微信内播放失败，按下方/上方方法打开';}" +
+  "function ptzTurn(d){tip.textContent='⏳ 转动中...';fetch('/api/ptz?serial='+encodeURIComponent(s)+'&dir='+d).then(function(r){return r.json()}).then(function(j2){tip.textContent=j2.ok?('✅ 已向'+({'up':'上','down':'下','left':'左','right':'右'}[d]||d)+'转动'):('⚠️ '+(j2.err||'转动失败'))}).catch(function(){tip.textContent='⚠️ 网络错误'})};" +
   "fetch('/api/live-url?serial='+encodeURIComponent(s)).then(function(r){return r.json()}).then(function(j){" +
   "if(!j.url){tip.textContent='获取失败:'+(j.err||'未知');return}" +
+  "if(j.ptz){document.getElementById('pad').style.display='flex'}" +
+  "if(j.h265Only&&isWX){document.getElementById('h265bar').style.display='block'}" +
   "try{var p=new HlsPlayer({id:'app',url:j.url,staticPath:'/ezui/',autoPlay:true});p.play();" +
-  "tip.textContent='缓冲中... 首次加载解码器约需3~8秒';}catch(e){tip.textContent='播放器异常:'+e}}" +
-  ").catch(function(e){tip.textContent='网络错误:'+e});</scr" + "ipt></body></html>";
+  "tip.textContent='缓冲中... 首次加载解码器约需3~8秒';" +
+  "var n=0,tm=setInterval(function(){var v=document.querySelector('#app video'),c=document.querySelector('#app canvas');" +
+  "if((v&&v.videoWidth>0)||c){clearInterval(tm);tip.textContent='● 直播中';document.getElementById('h265bar').style.display='none';document.getElementById('fail').style.display='none';return}" +
+  "n++;if(n>18){clearInterval(tm);showFail();}},1000);" +
+  "}catch(e){showFail();}}" +
+  ").catch(function(e){tip.textContent='网络错误:'+e});</scr" + "ipt>" +
+  "<div style=\"height:56px\"></div>" +
+  "<div id=\"copybar\">微信打不开？复制链接到浏览器观看 <button class=\"act\" onclick=\"copyLink(this)\">复制链接</button></div>" +
+  "</body></html>";
 
 // 「今日人员活动」时间线页面: 全部记录+照片+AI判读, 微信只推一条链接
 const TODAY_PAGE_HTML = "<!doctype html><html><head><meta charset=\"utf-8\">" +
@@ -831,8 +907,10 @@ const TODAY_PAGE_HTML = "<!doctype html><html><head><meta charset=\"utf-8\">" +
   "</style></head><body>" +
   "<header>📋 今日人员活动<div class=\"meta\" id=\"sub\">加载中...</div></header><div id=\"list\"></div>" +
   "<scr" + "ipt>" +
-  "var qs=new URLSearchParams(location.search);var qSerial=qs.get('serial')||'';" +
-  "fetch('/api/today-events'+(qSerial?'?serial='+encodeURIComponent(qSerial):'')).then(function(r){return r.json()}).then(function(j){" +
+  "var qs=new URLSearchParams(location.search);var qSerial=qs.get('serial')||'';var qVillage=qs.get('village')||'';" +
+  "var qp=[];if(qSerial)qp.push('serial='+encodeURIComponent(qSerial));if(qVillage)qp.push('village='+encodeURIComponent(qVillage));" +
+  "fetch('/api/today-events'+(qp.length?'?'+qp.join('&'):'')).then(function(r){return r.json()}).then(function(j){" +
+  "if(qVillage){document.querySelector('header').childNodes[0].nodeValue='📋 今日人员活动·'+qVillage}" +
   "if(j.devName){document.querySelector('header').childNodes[0].nodeValue='📋 '+(j.isToday===false?'昨日':'今日')+'人员活动·'+j.devName}" +
   "var sub0=document.getElementById('sub');if(j.date){sub0.textContent='📅 '+j.date+(j.isToday===false?'(回退显示)':'')}" +
   "var L=document.getElementById('list');" +
@@ -858,7 +936,7 @@ function buildLiveReply(fromUser, toUser, onlySerial, village) {
   if (!lines.length) return replyText(fromUser, toUser, "没有启用的摄像头设备");
   return replyText(fromUser, toUser,
     dear(fromUser) + "🔴 监控直播（点链接直接看）：\n\n" + lines.join("\n\n") +
-    "\n\n💡 微信内直接播放，首次缓冲约3~5秒。\n画面卡顿就退出重新点链接（会自动换新地址）");
+    "\n\n💡 首次缓冲约3~8秒。\n若微信里转圈或提示格式不支持：点右上角「···」→「在浏览器打开」即可观看。\n画面卡顿就退出重新点链接（会自动换新地址）");
 }
 
 // ---------- 今日人员事件统计 ----------
@@ -1043,10 +1121,11 @@ async function fetchOpenids() {
     return (uj.data && uj.data.openid) || [];
   } catch (e) { console.log("[日报] 关注者列表获取失败: " + e.message.slice(0, 60)); return []; }
 }
-// 按给定事件列表与设备标签拼装日报文案
-function buildDailyReportContent(evs, devLabels) {
+// 按给定事件列表与设备标签拼装日报文案; village 传村名时链接只看该村(分组日报防越权)
+function buildDailyReportContent(evs, devLabels, village) {
   const n = evs.length;
   const pub = (cfg.wxTest || {}).publicBase || "";
+  const todayUrl = pub + "/today" + (village ? ("?village=" + encodeURIComponent(village)) : "");
   let first, remark;
   if (!n) {
     first = "📊 老家监控日报";
@@ -1061,8 +1140,9 @@ function buildDailyReportContent(evs, devLabels) {
     remark = lines.join("\n") + (n > 6 ? "\n... 共" + n + "次" : "") +
       "\n覆盖设备: " + devLabels.join(" / ") + "\n点本消息看完整AI分析 👉";
   }
-  return { first: first, remark: remark, url: pub ? (pub + "/today") : "" };
+  return { first: first, remark: remark, url: todayUrl };
 }
+let _dailyBusy = false;
 async function maybeDailyReport() {
   const T = cfg.wxTest || {};
   if (T.enabled === false || T.dailyReport === false || !T.templateId) return;
@@ -1071,44 +1151,53 @@ async function maybeDailyReport() {
   const key = todayKey();
   let st = {};
   try { st = JSON.parse(fs.readFileSync(path.join(ROOT, "data", "daily_report.json"), "utf8")); } catch (e) {}
-  if (st.last === key) return;
+  if (st.last === key || _dailyBusy) return;
+  _dailyBusy = true;
+  try {
+    // 全日人形事件(已过滤隐藏设备)
+    const all = todayPersonEvents();
+    let openids = [];
+    try { openids = await fetchOpenids(); } catch (e) { console.log("[日报] 关注者列表获取失败: " + e.message.slice(0, 60)); }
+    // token 未就绪时 openids 可能为空: 不标记已发, 下一分钟自动重试(避免当天整日漏报)
+    if (!openids.length) { console.log("[日报] " + key + " 暂未取得关注者列表, 下个周期重试"); return; }
 
-  // 全日人形事件(已过滤隐藏设备)
-  const all = todayPersonEvents();
-  let openids = [];
-  try { openids = await fetchOpenids(); } catch (e) { console.log("[日报] 关注者列表获取失败: " + e.message.slice(0, 60)); }
-  // token 未就绪时 openids 可能为空: 不标记已发, 下一分钟自动重试(避免当天整日漏报)
-  if (!openids.length) { console.log("[日报] " + key + " 暂未取得关注者列表, 下个周期重试"); return; }
-  st.last = key;
-  try { fs.writeFileSync(path.join(ROOT, "data", "daily_report.json"), JSON.stringify(st)); } catch (e2) {}
-
-  // 按分组分发: 默认组(全量) + 各 scope 组(按村裁剪); 同事组(push=none)不发送
-  const buckets = {}; // scope -> { ids:[], labels:[] }
-  const defaultIds = [];
-  for (const oid of openids) {
-    const g = groupOf(oid);
-    if (!g) { defaultIds.push(oid); continue; }
-    const scope = g.push || "all";
-    if (scope === "all") { defaultIds.push(oid); continue; }
-    if (scope === "none") continue; // 同事组等: 不接收日报
-    (buckets[scope] = buckets[scope] || { ids: [], labels: deviceNamesByVillage(scope) }).ids.push(oid);
-  }
-  // 默认组: 全部设备
-  if (defaultIds.length) {
-    const c = buildDailyReportContent(all, dailyReportDevices());
-    pushTestTemplate(c.first, key, "每日汇总", c.remark, c.url, true,
-      { allowOid: function (oid) { return defaultIds.indexOf(oid) >= 0; } }).catch(function () {});
-  }
-  // 按村分组: 仅该村民事件
-  for (const scope of Object.keys(buckets)) {
-    const b = buckets[scope];
-    if (!b.ids.length) continue;
-    const evsV = all.filter(function (e) { return deviceVillage(e.serial) === scope; });
-    const c = buildDailyReportContent(evsV, b.labels);
-    pushTestTemplate(c.first, key, "每日汇总", c.remark, c.url, true,
-      { allowOid: function (oid) { return b.ids.indexOf(oid) >= 0; } }).catch(function () {});
-  }
-  console.log("[日报] 已推送 " + key + " (活动" + all.length + "次); 默认组" + defaultIds.length + "人, 分组成员" + Object.keys(buckets).map(function (s) { return s + ":" + buckets[s].ids.length; }).join(","));
+    // 按分组分发: 默认组(全量) + 各 scope 组(按村裁剪); 同事组(push=none)不发送
+    const buckets = {}; // scope -> { ids:[], labels:[] }
+    const defaultIds = [];
+    for (const oid of openids) {
+      const g = groupOf(oid);
+      if (!g) { defaultIds.push(oid); continue; }
+      const scope = g.push || "all";
+      if (scope === "all") { defaultIds.push(oid); continue; }
+      if (scope === "none") continue; // 同事组等: 不接收日报
+      (buckets[scope] = buckets[scope] || { ids: [], labels: deviceNamesByVillage(scope) }).ids.push(oid);
+    }
+    const plan = [];
+    // 默认组: 全部设备
+    if (defaultIds.length) {
+      const c = buildDailyReportContent(all, dailyReportDevices());
+      plan.push(pushTestTemplate(c.first, key, "每日汇总", c.remark, c.url, true,
+        { allowOid: function (oid) { return defaultIds.indexOf(oid) >= 0; } }));
+    }
+    // 按村分组: 仅该村民事件, 链接也只看该村
+    for (const scope of Object.keys(buckets)) {
+      const b = buckets[scope];
+      if (!b.ids.length) continue;
+      const evsV = all.filter(function (e) { return deviceVillage(e.serial) === scope; });
+      const c = buildDailyReportContent(evsV, b.labels, scope);
+      plan.push(pushTestTemplate(c.first, key, "每日汇总", c.remark, c.url, true,
+        { allowOid: function (oid) { return b.ids.indexOf(oid) >= 0; } }));
+    }
+    const results = await Promise.all(plan);
+    const sentAny = results.some(function (n) { return n > 0; });
+    // 全部失败(网络/token抖动): 不记账, 下一分钟自动重试, 避免日报因瞬时故障整天丢失
+    if (!sentAny) { console.log("[日报] " + key + " 本轮推送全部失败, 下个周期重试"); return; }
+    const failedGroups = results.filter(function (n) { return n === 0; }).length;
+    if (failedGroups > 0) console.log("[日报] 部分分组推送失败(" + failedGroups + "组), 已记账不再重试以免重复打扰");
+    st.last = key;
+    try { fs.writeFileSync(path.join(ROOT, "data", "daily_report.json"), JSON.stringify(st)); } catch (e2) {}
+    console.log("[日报] 已推送 " + key + " (活动" + all.length + "次); 默认组" + defaultIds.length + "人, 分组成员" + Object.keys(buckets).map(function (s) { return s + ":" + buckets[s].ids.length; }).join(","));
+  } finally { _dailyBusy = false; }
 }
 setInterval(maybeDailyReport, 60e3);
 setTimeout(maybeDailyReport, 20e3);
@@ -1186,21 +1275,38 @@ async function handleKanJia(dev, fromUser, toUser) {
 const server = http.createServer(function (req, res) {
   const u = new URL(req.url, "http://localhost");
   if (req.method === "GET" && u.pathname === "/__who") {
+    if (!isLoopback(req)) { res.writeHead(403); res.end(""); return; } // 不向公网暴露 pid
     res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ app: APP_NAME, version: VERSION, pid: process.pid }));
     return;
   }
   if (req.method === "GET" && u.pathname === "/__shutdown") {
-    const sq = Object.fromEntries(u.searchParams.entries());
-    if (sq.pid === String(process.pid)) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end('{"ok":true}');
-      console.log("[关闭] 收到新实例接管请求，正在退出...");
-      removePidIfMine();
-      setTimeout(function() { process.exit(0); }, 300);
+    if (isLoopback(req)) {
+      // 本机：仅允许新实例按 pid 接管退出（启动脚本自愈用）
+      const sq = Object.fromEntries(u.searchParams.entries());
+      if (sq.pid === String(process.pid)) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end('{"ok":true}');
+        console.log("[关闭] 收到新实例接管请求，正在退出...");
+        removePidIfMine();
+        setTimeout(function() { process.exit(0); }, 300);
+      } else {
+        res.writeHead(403);
+        res.end("");
+      }
     } else {
-      res.writeHead(403);
-      res.end("");
+      // 远程：必须携带 shutdownToken（或 wxServer.token），否则拒绝，防止公网隧道被恶意一键关服
+      const tok = ((cfg.wxServer && (cfg.wxServer.shutdownToken || cfg.wxServer.token)) || "");
+      if (tok && u.searchParams.get("token") === tok) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end('{"ok":true}');
+        console.log("[关闭] 收到鉴权通过的远程关闭请求，正在退出...");
+        removePidIfMine();
+        setTimeout(function() { process.exit(0); }, 300);
+      } else {
+        res.writeHead(403);
+        res.end("");
+      }
     }
     return;
   }
@@ -1250,12 +1356,14 @@ const server = http.createServer(function (req, res) {
   if (req.method === "GET" && u.pathname === "/api/today-events") {
     try {
       const qSerial = u.searchParams.get("serial") || "";
-      let evs = todayPersonEvents();
+      const qVillage = u.searchParams.get("village") || ""; // 分组过滤: 双溪村组打开日报链接只看该村的记录
+      const byVillage = function (e) { return !qVillage || deviceVillage(e.serial) === qVillage; };
+      let evs = todayPersonEvents().filter(byVillage);
       if (qSerial) evs = evs.filter(function (e) { return e.serial === qSerial; });
       let displayDate = todayKey();
       let isToday = true;
       if (!evs.length) {
-        const all = loadEventsArr().filter(function (e) { return e.source !== "kanjia" && (e.person === true || /人形检测/.test(String(e.title))) && (!qSerial || e.serial === qSerial); });
+        const all = loadEventsArr().filter(function (e) { return e.source !== "kanjia" && (e.person === true || /人形检测/.test(String(e.title))) && (!qSerial || e.serial === qSerial) && byVillage(e); });
         if (all.length) {
           const latest = all[all.length - 1];
           const lt = new Date(latest.ts || 0);
@@ -1375,17 +1483,69 @@ const server = http.createServer(function (req, res) {
     res.end(TODAY_PAGE_HTML);
     return;
   }
+  // 云台控制(直播页方向盘): 仅 config 里 ptz:true 的设备(云台机), 短促转动800ms后自动停
+  if (req.method === "GET" && u.pathname === "/api/ptz") {
+    const serial = u.searchParams.get("serial") || "";
+    const dir = String(u.searchParams.get("dir") || "");
+    const devObj = (cfg.devices || []).find(function (d) { return d.serial === serial; });
+    const dirMap = { up: 0, down: 1, left: 2, right: 3 };
+    const fail = function (msg) { res.writeHead(400, { "Content-Type": "application/json; charset=utf-8" }); res.end(JSON.stringify({ err: msg })); };
+    if (!devObj || devObj.watch === false) return fail("设备不存在");
+    if (!devObj.ptz) return fail("该设备不是云台机，无法转动");
+    if (dirMap[dir] === undefined) return fail("方向参数: up/down/left/right");
+    const now = Date.now();
+    if (now - (_ptzLast[serial] || 0) < 1000) return fail("操作太频繁，稍等1秒");
+    _ptzLast[serial] = now;
+    (async function () {
+      try {
+        const r = await client.ptzStart(serial, dirMap[dir]);
+        if (String(r.code) !== "200") throw new Error("code=" + r.code + " " + (r.msg || ""));
+        setTimeout(function () {
+          client.ptzStop(serial).catch(function (e3) {
+            console.log("[云台] " + devObj.name + " 停止指令失败(设备可能持续转动!): " + e3.message.slice(0, 80));
+          });
+        }, 800);
+        console.log("[" + new Date().toLocaleTimeString() + "] [云台] " + devObj.name + " " + dir);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e2) {
+        console.log("[云台] " + devObj.name + " 转动失败: " + e2.message.slice(0, 100));
+        res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ err: "转动失败: " + e2.message.slice(0, 80) }));
+      }
+    })();
+    return;
+  }
   if (req.method === "GET" && u.pathname === "/api/live-url") {
     const serial = u.searchParams.get("serial") || "";
     const okDev = (cfg.devices || []).some(function (d) { return d.watch && d.serial === serial; });
     if (!okDev) { res.writeHead(403, { "Content-Type": "application/json" }); res.end(JSON.stringify({ err: "设备不存在" })); return; }
+    const ptzFlag = !!(((cfg.devices || []).find(function (d) { return d.serial === serial; }) || {}).ptz); // 云台机才在直播页显示方向盘
+    // H264可被手机微信直接播放; 仅H265时多数手机微信放不了, /live页会引导"在浏览器打开"
+    async function h264Available() {
+      const c = _h264Probe[serial];
+      if (c && Date.now() - c.at < 600e3) return !c.h265Only;
+      let h265Only = true;
+      try {
+        const r0 = await client.liveAddress(serial, { protocol: 2, supportH265: 0 });
+        const u0 = r0 && r0.data && r0.data.url;
+        if (u0) {
+          const pl0 = await (await fetch(u0, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(6000) })).text();
+          h265Only = pl0.indexOf("/ErrCode/") >= 0;
+        }
+      } catch (e0) { /* 探测失败按仅H265处理 */ }
+      _h264Probe[serial] = { h265Only: h265Only, at: Date.now() };
+      console.log("[直播] " + serial + " H264探测: " + (h265Only ? "不支持(仅H265)" : "支持") + "，结果缓存10分钟");
+      return !h265Only;
+    }
     (async function () {
       try {
-        // v2接口实时取H264流(supportH265=0), 每次打开页面都是新地址
-        const r = await client.liveAddress(serial, { protocol: 2 });
+        const want264 = await h264Available();
+        // v2接口取流: 有H264优先H264(微信能直接播); 否则H265+fMP4(前端EZUIKit软解)
+        const r = await client.liveAddress(serial, { protocol: 2, supportH265: want264 ? 0 : 1 });
         const url = r && r.data && r.data.url;
         if (!url) throw new Error(JSON.stringify(r).slice(0, 120));
-        // 校验清单是否为错误占位流(摄像头只输出H265时, 平台返回ErrCode图片流而非真实画面)
+        // 校验清单是否为错误占位流(设备离线时平台返回ErrCode图片流而非真实画面)
         let pl = "";
         try { pl = await (await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(8000) })).text(); } catch (ePl) {}
         if (pl.indexOf("/ErrCode/") >= 0) {
@@ -1394,16 +1554,16 @@ const server = http.createServer(function (req, res) {
           res.end(JSON.stringify({ err: "摄像头暂时出不了画面：请检查它是否在线/正常供电；若多次出现请到萤石APP查看该设备的编码与状态" }));
           return;
         }
-        console.log("[" + new Date().toLocaleTimeString() + "] [直播] 下发HLS(H264)地址 " + serial);
+        console.log("[" + new Date().toLocaleTimeString() + "] [直播] 下发HLS(" + (want264 ? "H264" : "H265") + ")地址 " + serial);
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ url: url }));
+        res.end(JSON.stringify({ url: url, h265Only: !want264, ptz: ptzFlag }));
       } catch (e2) {
-        // API失败回退到萤石云后台生成的固定地址(config.liveUrls)
+        // API失败回退到萤石云后台生成的固定地址(config.liveUrls, 为H265流)
         const manual = (cfg.liveUrls || {})[serial];
         if (manual) {
           console.log("[" + new Date().toLocaleTimeString() + "] [直播] API失败, 回退后台固定地址 " + serial);
           res.writeHead(200, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ url: manual }));
+          res.end(JSON.stringify({ url: manual, h265Only: true, ptz: ptzFlag }));
           return;
         }
         console.log("[直播] 获取地址失败 " + serial + ": " + e2.message.slice(0, 110));
@@ -1556,7 +1716,8 @@ const server = http.createServer(function (req, res) {
             else if (k === "live_bk" || k === "live_bg" || k === "live_c6") {
               const serialMapL = { live_bk: "BK2385850", live_bg: "BG6569629", live_c6: "D24049607" };
               console.log("[" + new Date().toLocaleTimeString() + "] [菜单] 看直播 " + k);
-              res.end(buildLiveReply(fromUser, toUser, serialMapL[k]));
+              // 同时按组所在村过滤(双保险): 即使拦截名单漏配, 分组成员也拿不到外村直播链接
+              res.end(buildLiveReply(fromUser, toUser, serialMapL[k], grpVillage));
               return;
             }
           }
@@ -1644,7 +1805,7 @@ function startServer(retry) {
     console.log("萤石推送回调地址填: https://<你的隧道域名>/ezviz/push");
     console.log("下一步: 启动内网穿透指向该端口, 再到公众号后台「服务器配置」填入公网地址");
     console.log("  URL  = 穿透给的公网https地址");
-    console.log("  Token = " + (WX.token || "(config.json wxServer.token 未设置)"));
+    console.log("  Token = " + (WX.token ? ("<已配置 " + String(WX.token).length + " 字符，已脱敏不打印>") : "(config.json wxServer.token 未设置)"));
     console.log("  消息加解密方式 = 明文模式");
   });
 }
