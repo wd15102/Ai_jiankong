@@ -28,6 +28,11 @@
 
   "watchIntervalSec": 300,
 
+  "storage": {
+    "_说明": "captureRetentionDays=抓图存档(captures/)保留天数, 超过自动删除(原图+缩略图); web服务每天清理一次。留空或删掉整个块则默认90天",
+    "captureRetentionDays": 90
+  },
+
   "ai": {
     "enabled": true,
     "pushOnlyWhenPerson": true,
@@ -71,7 +76,15 @@
     "wxpusherAppToken": "",
     "wxpusherUid": "",
     "ntfyTopicUrl": "",
-    "note": "报警推送通道。wxTest=复用 wxTest 块发模板消息到测试号关注者（出站调用，不依赖公网）；可选 wecombot / wxpusher / ntfy；none=不推送"
+    "throttleWindowSec": 1800,
+    "throttleMax": 2,
+    "timeWindow": {
+      "note": "报警推送时段限制：以下 openid 只在每天 startHour:00~endHour:00 之间收到报警推送(其余时段静默不推); 名单外不受限",
+      "startHour": 10,
+      "endHour": 19,
+      "openids": ["oAQMW3XXXXXXXXXXXXXXXXXXXXXX"]
+    },
+    "note": "报警推送通道。wxTest=复用 wxTest 块发模板消息到测试号关注者（出站调用，不依赖公网）；可选 wecombot / wxpusher / ntfy；none=不推送。throttleWindowSec/throttleMax=报警推送限流：throttleWindowSec 秒滑动窗口内每位微信最多收 throttleMax 条（默认30分钟/2条）。timeWindow=报警推送时段限制(名单内openid只在 startHour~endHour 之间收到推送)"
   },
 
   "wxGroups": {

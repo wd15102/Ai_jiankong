@@ -222,16 +222,27 @@ function verifyEzvizSign(bodyRaw, headers) {
   for (const k in headers) h[String(k).toLowerCase()] = String(headers[k]);
   const got = h["x-ezviz-signature"] || h["signature"] || h["x-signature"] || "";
   if (!got) return false; // 配了密钥就必须带签名，缺签名直接拒绝
-  const cands = [
+  // 萤石推送签名协议: signature = HMAC-SHA1(secret, body + t)，t 为请求头里的毫秒时间戳
+  const t = h["t"] || "";
+  const cands = [];
+  if (t) cands.push(crypto.createHmac("sha1", P.secret).update(bodyRaw + t).digest("hex"));
+  cands.push(
     crypto.createHash("md5").update(P.secret + bodyRaw).digest("hex"),
     crypto.createHash("md5").update(bodyRaw + P.secret).digest("hex"),
     crypto.createHmac("sha256", P.secret).update(bodyRaw).digest("hex"),
     crypto.createHash("sha256").update(P.secret + bodyRaw).digest("hex")
-  ].map(function(s){ return s.toLowerCase(); });
-  return cands.indexOf(got.toLowerCase()) >= 0;
+  );
+  return cands.map(function(s){ return String(s).toLowerCase(); }).indexOf(got.toLowerCase()) >= 0;
 }
 async function handleEzvizPush(bodyRaw, headers) {
   const t = Date.now();
+  // VMD(VideoMotionDetection)是设备本地视频移动侦测的持续上报: 高频(每20~30秒一条)、无截图、
+  // 下游零用途(不进AI/不进微信/不建事件), 在落盘前直接丢弃, 避免刷爆push_log挤掉有效记录
+  try {
+    const peek = JSON.parse(bodyRaw);
+    const inner = (peek && peek.body && typeof peek.body === "object") ? peek.body : peek;
+    if (inner && (inner.identifier === "VMD" || inner.domain === "VideoMotionDetection")) return;
+  } catch (e) {}
   logPush({ ts: t, time: new Date(t).toLocaleString("zh-CN",{hour12:false}), headers: headers, body: String(bodyRaw).slice(0, 2500) });
   if (!verifyEzvizSign(bodyRaw, headers)) {
     console.log("[萤石推送] 签名校验失败，已丢弃（拒绝伪造/未授权推送）");
@@ -248,6 +259,22 @@ async function handleEzvizPush(bodyRaw, headers) {
     if (!v2b.devSerial && !v2b.deviceSerial) v2b.devSerial = v2b.deviceId || (v2hdr && v2hdr.deviceId) || "";
     if (!v2b.alarmTime && v2hdr && v2hdr.messageTime) v2b.alarmTime = String(v2hdr.messageTime);
     p = v2b; // 用内层body作为主对象继续兼容老逻辑
+  }
+  // IntelligentTag(ys.iot)消息: 设备端人形检测的另一种上报格式, 人形结论藏在 payload.tags 里,
+  // 不带155/SmartHumanDet等报警码, 之前会被当普通消息丢弃(17:08漏推的根因)。
+  // 命中 human 标签即归一成人形报警, 复用下游统一的人形判定/"人形检测"标题/推送链路。
+  if (p && (p.identifier === "IntelligentTag" || p.domain === "IntelligentTag")) {
+    var tagRoot = null;
+    try { tagRoot = JSON.parse(p.payload); } catch (eTag) {}
+    var tagInfo = tagRoot && tagRoot.intelligentTag;
+    var tagArr = (tagInfo && Array.isArray(tagInfo.tags)) ? tagInfo.tags : [];
+    if (tagArr.some(function (x) { return /human|person|people|人形|^人$/i.test(String((x && x.type) || "")); })) {
+      p.alarmType = "SmartHumanDet";
+      var tagBasic = (tagRoot && tagRoot.basic) || (tagInfo && tagInfo.basic) || null; // basic在payload顶层, 与intelligentTag同级
+      if (tagBasic && tagBasic.dateTime) p.alarmTime = tagBasic.dateTime; // 段开始时间比messageTime(收到时间)准
+      // 注: payload里的截图fileid是设备本地存储, streamer/alarm/url/get取不到(Read error),
+      // 故不设picUrl, 由下游"复用同活动报警存图→现场抓图"兜底
+    }
   }
   // 兼容多种字段命名(老v1平铺 + v2展平后)
   var raw = JSON.stringify(p);
@@ -290,14 +317,40 @@ async function handleEzvizPush(bodyRaw, headers) {
   }
   if (serial) {
     var evts = loadEventsArr();
-    var dupKey = serial + "@" + (ts || 0);
-    if (evts.some(function(e){ return e.serial + "@" + e.ts === dupKey; })) { console.log("[萤石推送] 重复消息跳过 " + dupKey); return; }
-    // 图片：优先报警自带截图，失败现场抓图兜底
+    var evTs = ts || Date.now();
+    // 同设备90秒内的消息视为同一次活动: 人形tag与报警消息常成对到达, tag还会在段首/段尾各发一次, 只推一条。
+    // 例外: 报警消息自带相机的人形快照(picUrl)时, 若90秒内的旧事件被AI判了"无人"(person=false),
+    // 说明可能漏判, 放行用自带快照二次判定; 旧事件已确认有人则仍去重, 避免同一次活动双推。
+    // (20:47漏推教训: tag先到复用了人进场前的空帧被判无人, 随后带有人快照的报警被去重吞掉)
+    var recentEvts = evts.filter(function(e){ return e.source !== "kanjia" && e.serial === serial && Math.abs((e.ts || 0) - evTs) < 90e3; });
+    var confirmedRecent = recentEvts.some(function(e){ return e.person === true; });
+    if (recentEvts.length && (confirmedRecent || !picUrl)) {
+      console.log("[萤石推送] 90秒内同设备已有记录，视为同一次活动跳过 " + serial + "@" + new Date(evTs).toLocaleTimeString());
+      return;
+    }
+    // 图片：优先报警自带截图 → 复用同活动已落地的报警存图 → 现场抓图兜底
     var fname = "";
     if (picUrl) {
       fname = serial + "_p" + (ts || Date.now()) + ".jpg";
       try { await client.downloadTo(picUrl, path.join(ROOT, "captures", fname)); }
       catch (e) { console.log("[萤石推送] 截图下载失败: " + e.message); fname = ""; }
+    }
+    if (!fname) {
+      // 无报警自带截图时(如IntelligentTag人形标签): 同一次活动往往伴随移动侦测消息先到并存了图,
+      // 按文件名时间戳找同设备±2分钟内的报警存图复用——画面贴近事件时刻还省抓图配额; 找不到再抓现况
+      try {
+        var evTsRef = evTs;
+        var reused = fs.readdirSync(path.join(ROOT, "captures"))
+          .filter(function (f) { return f.indexOf(serial + "_p") === 0 && f.slice(-4) === ".jpg"; })
+          .map(function (f) { return { f: f, t: Number(f.slice(serial.length + 2, -4)) }; })
+          .filter(function (x) { return isFinite(x.t) && x.t <= evTsRef + 60e3 && evTsRef - x.t < 120e3; })
+          // 人是"走进画面"的: 优先事件时刻之后的帧(人在段内通常停留15-60秒), 同侧再取离事件时刻最近的
+          .sort(function (a, b) {
+            var pa = a.t < evTsRef ? 1 : 0, pb = b.t < evTsRef ? 1 : 0;
+            return (pa - pb) || (Math.abs(a.t - evTsRef) - Math.abs(b.t - evTsRef));
+          })[0];
+        if (reused) { fname = reused.f; console.log("[萤石推送] 复用同活动报警存图: " + fname); }
+      } catch (eReuse) {}
     }
     if (!fname) {
       try {
@@ -326,10 +379,18 @@ async function handleEzvizPush(bodyRaw, headers) {
     }
     // 无人判定: 兼容【无人】(默认prompt)和行首"无人"(config自定义prompt不带括号), 否则无人事件也会被标成"有人员活动"误推
     const noPerson = /【无人】/.test(aiTxt) || /^\s*无人/.test(String(aiTxt).trim());
+    // AI结论里的异常关键词: 即使判了无人, 提到"异常/闯入"等仍值得推
+    const hasAbnormal = /(异常|需关注|陌生|闯入)/.test(String(aiTxt)) && !/无异常/.test(String(aiTxt));
+    // AI明确判无人且无异常描述 → 只入看板不推送: 设备端人形检测误报多(风吹草动也报),
+    // 二道AI把关后仍推"无人"会狼来了。AI全渠道失败(aiTxt为空)时仍推, 避免渠道故障期漏报
+    if (aiTxt && noPerson && !hasAbnormal) {
+      console.log("[萤石推送] AI判定无人，仅记录看板不推送: " + devName + " " + alarmTime);
+      return;
+    }
     // 语义化标题: 含设备名, 去掉"⚠️老家"等冗余前缀; 称呼(亲爱的东哥等)由 dear() 在发送时自动加在 first 前
     let firstLine;
     if (aiTxt) {
-      firstLine = noPerson ? ("检测到" + devName + "画面变化（AI判定无人）") : ("检测到" + devName + "有人员活动");
+      firstLine = noPerson ? ("检测到" + devName + "画面异常，AI提示需关注") : ("检测到" + devName + "有人员活动");
     } else if (isPersonType || personByText) {
       firstLine = "检测到" + devName + "有人员活动";
     } else {
@@ -342,7 +403,7 @@ async function handleEzvizPush(bodyRaw, headers) {
       "点击查看详情，查看 AI 现场分析结论 👉",
       fname ? (pubBase + "/detail?file=" + encodeURIComponent(fname)) : (picUrl || ""),
       false,
-      { serial: serial }  // 按设备所属村过滤推送对象(双溪村组只收双溪村/同事组不收)
+      { serial: serial, alarm: true }  // alarm=true: 应用报警推送时段限制(名单内openid只在10~19点之间推); 按设备所属村过滤推送对象(双溪村组只收双溪村/同事组不收)
     ).catch(function () {});
   }
 }
@@ -557,6 +618,13 @@ function canPushTo(openid, serial) {
   if (scope === "all") return true;
   return deviceVillage(serial) === scope;
 }
+// 报警推送时段限制(config.push.timeWindow): 名单内openid只在每天 startHour~endHour 之间收到报警推送(其余时段静默不推)
+function inAlarmTimeWindow(openid) {
+  const W = (cfg.push && cfg.push.timeWindow) || null;
+  if (!W || !Array.isArray(W.openids) || W.openids.indexOf(openid) < 0) return true; // 不在名单不限制
+  const h = new Date().getHours();
+  return h >= (Number(W.startHour) || 0) && h < (Number(W.endHour) || 24);
+}
 // 该微信能否查询(截图/直播/今日汇总)指定设备
 function canQuery(openid, serial) {
   const g = groupOf(openid);
@@ -606,8 +674,16 @@ function villageScopeOf(openid) {
   if (s === "双溪村" || s === "木山村") return s;
   return null;
 }
-// 每个微信(openid) 2小时内最多推送1次（报警类）：窗口内只记录不推送，2h后首条人物推送才发出
-const PUSH_THROTTLE_MS = 2 * 3600e3;
+// 每个微信(openid)的报警推送滑动窗口限流：窗口内最多 max 条，窗口随时间滚动，旧记录自动出窗
+// 默认 30 分钟内最多 2 条；可在 config.json push.throttleWindowSec / push.throttleMax 调整
+function pushThrottleCfg() {
+  const P = cfg.push || {};
+  return {
+    windowMs: (Number(P.throttleWindowSec) > 0 ? Number(P.throttleWindowSec) : 1800) * 1000,
+    max: Number(P.throttleMax) > 0 ? Number(P.throttleMax) : 2
+  };
+}
+function throttleHistory(v) { return Array.isArray(v) ? v.filter(function(t){ return t > 0; }) : (v > 0 ? [v] : []); } // 兼容旧格式(单时间戳数字)
 let _throttleCache = null;
 function loadThrottle() {
   if (_throttleCache) return _throttleCache;
@@ -615,7 +691,17 @@ function loadThrottle() {
   catch (e) { _throttleCache = {}; }
   return _throttleCache;
 }
-function saveThrottle(map) { try { fs.writeFileSync(path.join(ROOT, "data", "push_throttle.json"), JSON.stringify(map)); } catch (e) {} }
+function saveThrottle(map) {
+  try {
+    const winMs = pushThrottleCfg().windowMs, now = Date.now(), pruned = {};
+    for (const k in map) {
+      const recent = throttleHistory(map[k]).filter(function(t) { return now - t < winMs; });
+      if (recent.length) pruned[k] = recent; // 窗口外记录直接丢弃, 文件不无限增长
+    }
+    _throttleCache = pruned;
+    fs.writeFileSync(path.join(ROOT, "data", "push_throttle.json"), JSON.stringify(pruned));
+  } catch (e) {}
+}
 // 推送审计: 每次模板推送的结果都落盘(成功/失败/失败errcode)，控制台窗口丢了也有据可查
 function auditPush(serial, ok, attempted, skipped, scoped, errs) {
   try {
@@ -637,6 +723,7 @@ async function pushTestTemplate(first, timeStr, deviceStr, remark, detailUrl, fo
   const T = cfg.wxTest || {};
   if (!T.enabled || !T.templateId || !T.appId || !T.appSecret) return 0;
   const throttle = force ? null : loadThrottle();
+  const th = pushThrottleCfg();
   const now = Date.now();
   opt = opt || {};
   try {
@@ -658,8 +745,14 @@ async function pushTestTemplate(first, timeStr, deviceStr, remark, detailUrl, fo
       if (allowOid && !allowOid(oid)) { scoped++; continue; }
       // 按设备所属村过滤(如双溪村组只能收双溪村报警; 同事组 push=none 全程被拦)
       if (serialScope && !canPushTo(oid, serialScope)) { scoped++; continue; }
-      // 2小时内已推过该微信：本窗口内的新报警仅记录不推送，避免轰炸
-      if (throttle && (now - (throttle[oid] || 0)) < PUSH_THROTTLE_MS) { skipped++; continue; }
+      // 报警推送时段限制(仅报警 opt.alarm=true 生效, 日报等非报警推送不受限)
+      if (opt.alarm && !inAlarmTimeWindow(oid)) { scoped++; continue; }
+      // 滑动窗口限流(默认30分钟内最多2条)：窗口内已推满则本条仅记录不推送
+      if (throttle) {
+        const recent = throttleHistory(throttle[oid]).filter(function(t0) { return now - t0 < th.windowMs; });
+        if (recent.length >= th.max) { skipped++; continue; }
+        throttle[oid] = recent; // 预裁剪出窗旧记录, 发送成功后再追加本次
+      }
       attempted++;
       for (let att = 0; att < 2; att++) {
         try {
@@ -679,7 +772,7 @@ async function pushTestTemplate(first, timeStr, deviceStr, remark, detailUrl, fo
             })
           });
           const rj = await res.json();
-          if (rj.errcode === 0) { ok++; if (throttle) { throttle[oid] = now; } break; }
+          if (rj.errcode === 0) { ok++; if (throttle) { throttle[oid] = (Array.isArray(throttle[oid]) ? throttle[oid] : []).concat(now); } break; }
           errs.push(oid.slice(0, 8) + ":" + rj.errcode);
           console.log("[测试号推送] 失败 openid=" + oid.slice(0, 8) + "... err=" + rj.errcode + " " + rj.errmsg);
           if (att === 0 && isTokErr(rj.errcode)) { try { await new Promise(function(r){setTimeout(r,2000)}); token = await wxTestToken(true); continue; } catch (e2) { break; } }
@@ -687,10 +780,10 @@ async function pushTestTemplate(first, timeStr, deviceStr, remark, detailUrl, fo
         } catch (e) { errs.push(oid.slice(0, 8) + ":EXC"); break; }
       }
     }
-    if (openids.length) console.log("[测试号推送] 已推送 " + ok + "/" + openids.length + " 位关注者" + (skipped ? "，限频跳过 " + skipped + " 位(2h窗口内)" : "") + (scoped ? "，分组过滤 " + scoped + " 位" : ""));
+    if (openids.length) console.log("[测试号推送] 已推送 " + ok + "/" + openids.length + " 位关注者" + (skipped ? "，限频跳过 " + skipped + " 位(" + Math.round(th.windowMs / 60e3) + "分钟窗口已满" + th.max + "条)" : "") + (scoped ? "，分组过滤 " + scoped + " 位" : ""));
     auditPush(serialScope, ok, attempted, skipped, scoped, errs);
     if (throttle) saveThrottle(throttle);
-    // 该设备本应送达却一个都没成功(网络/token抖动)：60秒后自动重试一次(仍受2h节流约束,重试本身不再递归)
+    // 该设备本应送达却一个都没成功(网络/token抖动)：60秒后自动重试一次(仍受滑动窗口限流约束,重试本身不再递归)
     if (!force && !opt._isRetry && attempted > 0 && ok === 0) {
       console.log("[测试号推送] 全部失败，60秒后自动重试一次");
       setTimeout(function () {
@@ -1814,7 +1907,30 @@ cleanupStaleInstance().then(function() {
   // 启动即拉取关注者昵称(专属称呼用), 之后每小时刷新
   refreshFollowers().catch(function () {});
   setInterval(function () { refreshFollowers().catch(function () {}); }, 3600e3);
+  // 抓图存档按保留期清理(config.storage.captureRetentionDays, 默认90天): 启动后1分钟先跑一次, 之后每天一次
+  setTimeout(cleanupCaptures, 60e3);
+  setInterval(cleanupCaptures, 86400e3);
 });
+
+// ---------- 抓图存档按期清理 ----------
+// 覆盖 captures/ 下全部文件(原图+thumb_*.jpg缩略图都是平铺文件); events.json 自身上限500条, 天然不会超期, 无需处理
+function cleanupCaptures() {
+  const days = Number((cfg.storage && cfg.storage.captureRetentionDays) || 90);
+  if (!(days > 0)) return;
+  const dir = path.join(ROOT, "captures");
+  const cutoff = Date.now() - days * 86400e3;
+  let removed = 0, freed = 0;
+  try {
+    for (const name of fs.readdirSync(dir)) {
+      const f = path.join(dir, name);
+      let st;
+      try { st = fs.statSync(f); } catch (e) { continue; } // 竞争中被删/被占用: 跳过本轮
+      if (!st.isFile() || st.mtimeMs >= cutoff) continue;
+      try { fs.unlinkSync(f); removed++; freed += st.size; } catch (e2) {}
+    }
+  } catch (e) { console.log("[清理] captures/ 不可读: " + e.message.slice(0, 80)); return; }
+  if (removed) console.log("[" + new Date().toLocaleTimeString() + "] [清理] 删除 " + removed + " 个超过 " + days + " 天的抓图, 释放 " + (freed / 1048576).toFixed(1) + " MB");
+}
 
 process.on("SIGINT", function() {
   console.log("\n正在关闭...");

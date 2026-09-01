@@ -11,7 +11,7 @@
 ```
                          ┌──────────────┐
    萤石云报警推送 ──────▶│              │────▶ 抓图 ──▶ AI 判人 ──▶ 微信模板消息推送
-   (POST /ezviz/push)    │  webhook.js  │              │              (2 小时节流)
+   (POST /ezviz/push)    │  webhook.js  │              │              (30分钟窗口限流)
                          │    :8787     │              └──▶ 写入 data/events.json
    微信菜单/关键词 ──────▶│              │────▶ 现场抓图 ──▶ 图片消息 + AI 卡片
    (POST / 回调)          │              │
@@ -59,8 +59,8 @@
 **语义化推送**
 标题形如 `亲爱的东哥 检测到双溪村-CP1云台机有人员活动`，点击卡片进入详情页看现场原图 + AI 结论（图片可点击放大、双指缩放）。
 
-**2 小时节流**
-同一微信 2 小时内最多推送 1 条，窗口内的后续报警不再重复推送，避免频繁打扰。
+**30 分钟滑动窗口限流**
+同一微信 30 分钟内最多收到 2 条萤石报警推送，窗口随时间滚动（30 分钟前的推送不再占用名额）；可在 `config.json → push.throttleWindowSec` / `push.throttleMax` 调整，避免频繁打扰。
 
 **推送可靠性**
 每次模板推送的结果（成功/失败 errcode）都追加写入 `data/push_audit.txt`；本应送达却全部失败时 60 秒后自动重试一次。推送"消失"时先查这两个文件。
@@ -164,7 +164,7 @@ copy config.example.json config.json     # 然后填入自己的密钥
 | GET | `/api/models` | 可用 AI 模型列表 |
 | GET | `/api/events` | 历史报警列表 |
 | GET | `/api/events/changed` | 增量检测 |
-| GET | `/api/push-log` | 萤石推送记录 |
+| GET | `/api/push-log` | 萤石推送记录（含每条关联的 captures 抓图与 events.json 的 AI 有人/无人结论；VMD 视频移动侦测噪音消息 webhook 侧不落盘） |
 | POST | `/api/events/delete` `/delete-all` | 删除记录 |
 | GET | `/api/capture` | 实时抓图 |
 | GET | `/api/analyze` | 手动 AI 分析 |

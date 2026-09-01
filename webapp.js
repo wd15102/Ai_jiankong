@@ -162,6 +162,36 @@ function loadPushLog() {
     return Array.isArray(arr) ? arr : [];
   } catch (e) { return []; }
 }
+// captures 抓图按 {serial}_p{ms}.jpg / {serial}_{ms}.jpg 命名, 文件名里自带毫秒时间戳,
+// 推送记录按"同设备 ±2分钟内最近的抓图"关联(与 webhook 复用存图的窗口一致)
+function loadCaptureIndex() {
+  const idx = {};
+  try {
+    for (const f of fs.readdirSync(path.join(ROOT, "captures"))) {
+      if (!/\.jpg$/i.test(f)) continue;
+      const us = f.indexOf("_");
+      if (us <= 0) continue;
+      const serial = f.slice(0, us);
+      let rest = f.slice(us + 1, -4);
+      if (rest.charAt(0) === "p") rest = rest.slice(1);
+      const t = Number(rest);
+      if (!isFinite(t) || t <= 0) continue;
+      if (!idx[serial]) idx[serial] = [];
+      idx[serial].push({ t: t, file: f });
+    }
+  } catch (e) {}
+  return idx;
+}
+function findCapturePic(idx, serial, refMs) {
+  const list = idx[serial];
+  if (!list || !refMs) return "";
+  let best = null;
+  for (const x of list) {
+    if (Math.abs(x.t - refMs) > 120e3) continue;
+    if (!best || Math.abs(x.t - refMs) < Math.abs(best.t - refMs)) best = x;
+  }
+  return best ? "/captures/" + best.file : "";
+}
 function buildPushGroups(limit) {
   // 只展示"移动侦测"(含 VMD/video_motion/10002) 和"宠物侦测"两个分类, 其他全过滤
   const VISIBLE = { "motiondetect": "移动侦测", "pet": "宠物侦测" };
@@ -172,9 +202,10 @@ function buildPushGroups(limit) {
     try { if (typeof body === "string") body = JSON.parse(body); if (body && body.body) body = body.body; } catch (err) {}
     if (!body || typeof body !== "object") continue;
     const rawType = String(body.alarmType || body.type || body.eventType || body.msgType || body.identifier || body.messageType || "unknown");
-    // 归类: VMD/motiondetect/10002/video_motion 全部合并到移动侦测; pet/PetDetection → 宠物侦测
+    // 归类: motiondetect/10002/video_motion 合并到移动侦测; pet/PetDetection → 宠物侦测
     let key = "";
-    if (rawType === "VMD" || rawType === "motiondetect" || rawType === "10002" || /^video_motion/i.test(rawType)) key = "motiondetect";
+    if (rawType === "VMD" || /^video_motion/i.test(rawType)) continue; // VMD高频噪音已不落盘, 历史遗留记录也不再展示
+    if (rawType === "motiondetect" || rawType === "10002") key = "motiondetect";
     else if (/pet/i.test(rawType)) key = "pet";
     else continue; // 智能标签/声音/存储/上下线/人形... 全部丢弃
     const serial = String(body.devSerial || body.serial || body.deviceId || "?");
@@ -184,14 +215,50 @@ function buildPushGroups(limit) {
       const m = String(body.payload).match(/"dateTime":"([^"]+)"/);
       if (m) time = m[1];
     }
+    // 用于关联抓图的毫秒时间戳: 优先 body 里的报警时间(ISO/毫秒), 否则退回 webhook 收到时间
+    let tsMs = 0;
+    const tRaw = body.alarmTime || body.time;
+    if (tRaw) {
+      const n = Number(tRaw);
+      if (isFinite(n) && n > 0) tsMs = n < 1e12 ? n * 1000 : n;
+      else { const d = new Date(String(tRaw)); if (!isNaN(d.getTime())) tsMs = d.getTime(); }
+    }
+    if (!tsMs) tsMs = Number(e.ts) || 0;
     if (!groups[key]) { groups[key] = { type: key, name: VISIBLE[key], count: 0, items: [] }; order.push(key); }
     groups[key].count++;
-    groups[key].items.push({ time: time.slice(0, 19), serial: serial, devName: devName(serial), text: text.slice(0, 120) });
+    groups[key].items.push({ time: time.slice(0, 19), serial: serial, devName: devName(serial), text: text.slice(0, 120), tsMs: tsMs });
   }
   // 固定按白名单顺序展示: 移动侦测 → 宠物侦测
+  const capIdx = loadCaptureIndex();
+  // AI结论来自 events.json: 优先取"同一张抓图"对应事件的判读, 否则取同设备±90秒同活动事件
+  // (90秒与 webhook 的同活动去重窗口一致; 文件精确命中的事件代表分析的就是这张图, 最可信)
+  const events = loadEvents();
+  const evByFile = {}, evBySerial = {};
+  for (const ev of events) {
+    if (ev.file) evByFile[ev.file] = ev;
+    if (ev.serial) (evBySerial[ev.serial] = evBySerial[ev.serial] || []).push(ev);
+  }
   return ["motiondetect", "pet"].filter(function(k){ return groups[k]; }).map(function(t){
     const g = groups[t];
-    g.items = g.items.slice(-20).reverse();
+    // 全量展示已加载窗口内的记录, 保证分组计数"xxx 条"与实际可滚动行数一致
+    g.items = g.items.reverse();
+    for (const it of g.items) {
+      it.pic = findCapturePic(capIdx, it.serial, it.tsMs);
+      let ev = it.pic ? evByFile[path.basename(it.pic)] : null;
+      if (!ev && evBySerial[it.serial]) {
+        let best = null;
+        for (const e of evBySerial[it.serial]) {
+          if (!e.ts || !it.tsMs || Math.abs(e.ts - it.tsMs) > 90e3) continue;
+          const usable = e.ai && e.ai !== "(点击AI分析)";
+          const score = (usable ? 0 : 1e9) + Math.abs(e.ts - it.tsMs); // 有AI结论的优先, 同分取时间最近
+          if (!best || score < best.score) best = { e: e, score: score };
+        }
+        ev = best ? best.e : null;
+      }
+      it.person = ev ? ev.person === true : null;
+      it.ai = ev && ev.ai && ev.ai !== "(点击AI分析)" ? String(ev.ai).trim() : "";
+      delete it.tsMs;
+    }
     return g;
   });
 }

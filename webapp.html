@@ -112,15 +112,38 @@ select{background:var(--btn);color:var(--text);border:1px solid var(--border);bo
 .push-group.collapsed .toggle{transform:rotate(-90deg)}
 .push-group.collapsed .push-rows{display:none}
 .push-rows{padding:6px 0}
-.push-row{display:grid;grid-template-columns:170px 1fr 120px;gap:14px;padding:10px 18px;border-top:1px solid rgba(35,43,54,.5);font-size:13px;align-items:center}
+.push-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:16px}
+.push-filters .f-label{color:var(--text2);font-size:12px;margin-right:2px}
+.push-filters .f-sep{width:1px;height:18px;background:var(--border);margin:0 6px}
+.push-filters .fb{padding:4px 12px;font-size:12px}
+.push-filters .f-info{color:var(--text2);font-size:12px;margin-left:auto}
+.push-row{display:grid;grid-template-columns:76px 170px 1fr 120px;gap:14px;padding:10px 18px;border-top:1px solid rgba(35,43,54,.5);font-size:13px;align-items:center}
 .push-row:first-child{border-top:none}
-.push-row .t-time{color:var(--text2);font-family:Consolas,monospace;font-size:12px}
+.push-row .t-pic img{display:block;width:76px;height:46px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:zoom-in;background:#0b0f14}
+.push-row .t-pic img:hover{border-color:var(--accent)}
+.push-row .t-pic:empty::after{content:"无图";display:inline-block;width:76px;height:46px;line-height:46px;text-align:center;color:var(--text2);font-size:11px;border:1px dashed var(--border);border-radius:6px}
+.push-row .t-mid{min-width:0}
 .push-row .t-dev{color:#7cc4ff;font-size:13px;display:flex;align-items:center;gap:6px}
+.push-row .t-dev::before{content:"📹";font-size:12px}
+.push-row .t-ai{display:flex;align-items:center;gap:8px;margin-top:4px;min-width:0}
+.push-row .t-ai .badge{flex:none;padding:1px 8px;font-size:11px}
+.push-row .t-ai .ai-text{flex:1;min-width:0;color:var(--text2);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.push-row .t-ai.none .badge{background:rgba(154,167,180,.12);color:var(--text2);font-style:italic}
+/* ---- 推送截图灯箱(当前页放大, 点击遮罩/×/Esc 关闭) ---- */
+.lightbox{display:none;position:fixed;inset:0;z-index:999;background:rgba(5,8,12,.88);flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;cursor:zoom-out}
+.lightbox.open{display:flex}
+.lightbox img{max-width:92vw;max-height:76vh;border-radius:10px;border:1px solid var(--border);box-shadow:0 12px 48px rgba(0,0,0,.6);cursor:default;background:#0b0f14}
+.lightbox .lb-info{max-width:min(92vw,780px);background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 16px;font-size:13px;color:var(--text);line-height:1.7;cursor:default;max-height:16vh;overflow:auto}
+.lightbox .lb-head{display:flex;align-items:center;gap:8px;color:var(--text2);font-size:12px;margin-bottom:4px}
+.lightbox .lb-info .muted-note{color:var(--text2);font-style:italic;font-size:12px}
+.lightbox .lb-close{position:absolute;top:14px;right:20px;background:none;border:1px solid var(--border);color:var(--text2);font-size:20px;width:38px;height:38px;border-radius:50%;cursor:pointer;line-height:1}
+.lightbox .lb-close:hover{color:#fff;border-color:var(--text2)}
+.push-row .t-time{color:var(--text2);font-family:Consolas,monospace;font-size:12px}
 .push-row .t-dev::before{content:"📹";font-size:12px}
 .push-row .t-desc{color:var(--text);font-size:13px}
 .push-row .t-desc.muted{color:var(--text2);font-style:italic;font-size:12px}
 .push-row .t-code{text-align:right;color:var(--text2);font-size:11px;font-family:Consolas,monospace;background:#0b0f14;padding:3px 8px;border-radius:4px;border:1px solid var(--border)}
-@media(max-width:680px){.push-row{grid-template-columns:1fr;gap:4px}.push-row .t-code{text-align:left;justify-self:start}}
+@media(max-width:680px){.push-row{grid-template-columns:76px 1fr;gap:8px}.push-row .t-pic{grid-row:span 3}.push-row .t-code{text-align:left;justify-self:start}}
 .card{animation:fadeIn .3s ease}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
 footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(--border);text-align:center}
@@ -173,12 +196,31 @@ footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(-
     <h2>📨 萤石云推送记录</h2>
     <div class="push-actions">
       <button class="btn" id="btnRefreshPush">🔄 刷新</button>
-      <span class="hint">webhook 收到的萤石云推送消息 · 按消息类型分组 · 数据源 data/push_log.json</span>
+      <span class="hint">webhook 收到的萤石云推送消息 · 按消息类型分组 · 日志保留最近 200 条 · 缩略图为该时刻最近的设备抓图（点击看原图）</span>
     </div>
   </div>
   <div class="push-stats" id="pushStats"></div>
+  <div class="push-filters" id="pushFilters">
+    <span class="f-label">是否有人</span>
+    <button class="fb on" data-pf="all">全部</button>
+    <button class="fb" data-pf="yes">有人</button>
+    <button class="fb" data-pf="no">无人</button>
+    <button class="fb" data-pf="none">无AI结论</button>
+    <span class="f-sep"></span>
+    <span class="f-label">时间</span>
+    <button class="fb on" data-df="all">全部</button>
+    <button class="fb" data-df="today">今日</button>
+    <button class="fb" data-df="yesterday">昨日</button>
+    <button class="fb" data-df="before">前天及更早</button>
+    <span class="f-info" id="pushFilterInfo"></span>
+  </div>
   <div id="pushGroups"><div class="empty">加载中...</div></div>
 </section>
+<div class="lightbox" id="pushLightbox" onclick="if(event.target===this)closePushPic()">
+  <button class="lb-close" onclick="closePushPic()" title="关闭 (Esc)">×</button>
+  <img id="lbImg" alt="推送截图放大查看">
+  <div class="lb-info" id="lbInfo"></div>
+</div>
 <footer>局域网访问: http://电脑IP:8790 · 数据来自 monitor.js 报警事件</footer>
 <script>
 'use strict';
@@ -258,72 +300,159 @@ function pushDesc(type, text){
   return { html: esc(tip), muted: true };
 }
 
-async function loadPushLog(){
-  var box = $("pushGroups");
-  var stats = $("pushStats");
-  box.innerHTML = '<div class="empty">加载中...</div>';
-  stats.innerHTML = "";
-  try {
-    var d = await (await fetch("/api/push-log?limit=300")).json();
-    if (!d.groups || !d.groups.length){ box.innerHTML = '<div class="empty">暂无萤石推送记录（webhook 还没收到过萤石推送）</div>'; return; }
-
-    // 统计
-    var totalCount = 0, deviceSet = {}, typeCount = d.groups.length;
-    for (var i = 0; i < d.groups.length; i++){
-      totalCount += d.groups[i].count;
-      for (var j = 0; j < d.groups[i].items.length; j++){
-        var dev = d.groups[i].items[j].devName || d.groups[i].items[j].serial;
-        if (dev) deviceSet[dev] = 1;
-      }
-    }
-    var deviceCount = Object.keys(deviceSet).length;
-    var allLogs = d.total || totalCount;
-    var firstTime = "—", lastTime = "—";
-    // 第一个分组的最后一条 = 最新一条；最后一个分组的 items 反向时间排，可能不是
-    if (d.groups.length && d.groups[0].items.length){
-      lastTime = d.groups[0].items[0].time || "—";
-      // 找最早一条
-      var minTime = null;
-      for (var g = 0; g < d.groups.length; g++){
-        var its = d.groups[g].items;
-        for (var k = 0; k < its.length; k++){
-          var t = its[k].time;
-          if (t && (!minTime || t < minTime)) minTime = t;
-        }
-      }
-      firstTime = minTime || "—";
-    }
-    stats.innerHTML =
-      '<div class="stat-tile"><div class="label">推送总数</div><div class="val accent">' + allLogs + '</div><div class="sub">近 ' + Math.min(300, allLogs) + ' 条已加载</div></div>' +
-      '<div class="stat-tile"><div class="label">消息类型</div><div class="val">' + typeCount + '</div><div class="sub">见下方分组</div></div>' +
-      '<div class="stat-tile"><div class="label">涉及设备</div><div class="val">' + deviceCount + '</div><div class="sub">台</div></div>' +
-      '<div class="stat-tile"><div class="label">最早 / 最新</div><div class="val" style="font-size:14px">' + esc(firstTime.slice(0,16)) + '</div><div class="sub">' + esc(lastTime.slice(0,16)) + '</div></div>';
-
-    // 分组渲染
-    var out = "";
-    for (var i = 0; i < d.groups.length; i++){
-      var g = d.groups[i];
-      out += '<div class="push-group">' +
-        '<div class="push-group-head" onclick="this.parentNode.classList.toggle(\'collapsed\')">' +
-          '<span class="toggle">▼</span>' +
-          '<span class="name">' + esc(g.name) + '<span class="code">' + esc(g.type) + '</span></span>' +
-          '<span class="count">' + g.count + ' 条</span>' +
-        '</div>' +
-        '<div class="push-rows">';
-      for (var j = 0; j < g.items.length; j++){
-        var it = g.items[j];
-        var desc = pushDesc(g.type, it.text);
-        out += '<div class="push-row">' +
-          '<div class="t-time">' + esc(it.time) + '</div>' +
-          '<div class="t-dev">' + esc(it.devName) + '</div>' +
-          '<div class="t-desc' + (desc.muted ? ' muted' : '') + '">' + desc.html + '</div>' +
-        '</div>';
-      }
-      out += '</div></div>';
-    }
-    box.innerHTML = out;
-  } catch(e){ box.innerHTML = '<div class="empty">加载失败: ' + esc(e.message) + '</div>'; }
+// ---- 推送截图灯箱: 点击缩略图在当前页放大, 点击遮罩/×/Esc 关闭 ----
+var PUSH_ITEMS = []; // 与行渲染顺序一致, 供灯箱取回该项的时间/设备/AI结论
+function aiBadgeHtml(person){
+  if (person === true) return '<span class="badge person">有人</span>';
+  if (person === false) return '<span class="badge nobody">无人</span>';
+  return '<span class="badge prov">无AI结论</span>';
 }
+function openPushPic(i){
+  var it = PUSH_ITEMS[i]; if (!it || !it.pic) return;
+  $("lbImg").src = it.pic;
+  $("lbInfo").innerHTML =
+    '<div class="lb-head">' + aiBadgeHtml(it.person) + '<span>' + esc(it.time) + ' · ' + esc(it.devName) + '</span></div>' +
+    (it.ai ? '<div>' + esc(it.ai) + '</div>'
+           : '<div class="muted-note">该图片没有匹配到 AI 判读记录（普通移动侦测消息默认不做 AI 分析）</div>');
+  $("pushLightbox").classList.add("open");
+}
+function closePushPic(){ $("pushLightbox").classList.remove("open"); }
+document.addEventListener("keydown", function(e){ if (e.key === "Escape") closePushPic(); });
+
+// ---- 推送记录筛选: 是否有人 × 按天(今日/昨日/更早) 组合查询, 本地重渲染不重新请求 ----
+var PUSH_DATA = null; // 最近一次接口返回
+var PUSH_FILTER = { person: "all", day: "all" };
+function itemDayKey(s){
+  var m = String(s || "").match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+  return m ? m[1] + "-" + ("0" + m[2]).slice(-2) + "-" + ("0" + m[3]).slice(-2) : "";
+}
+function dayKeyOffset(offset){
+  var d = new Date(); d.setDate(d.getDate() - offset);
+  return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
+}
+function matchPushFilter(it){
+  var f = PUSH_FILTER;
+  if (f.person === "yes" && it.person !== true) return false;
+  if (f.person === "no" && it.person !== false) return false;
+  if (f.person === "none" && (it.person === true || it.person === false)) return false;
+  if (f.day !== "all"){
+    var k = itemDayKey(it.time);
+    if (f.day === "today" && k !== dayKeyOffset(0)) return false;
+    if (f.day === "yesterday" && k !== dayKeyOffset(1)) return false;
+    if (f.day === "before" && !(k && k < dayKeyOffset(1))) return false;
+  }
+  return true;
+}
+async function loadPushLog(){
+  $("pushGroups").innerHTML = '<div class="empty">加载中...</div>';
+  $("pushStats").innerHTML = "";
+  try {
+    PUSH_DATA = await (await fetch("/api/push-log?limit=300")).json();
+    renderPushGroups();
+  } catch(e){ $("pushGroups").innerHTML = '<div class="empty">加载失败: ' + esc(e.message) + '</div>'; }
+}
+function renderPushGroups(){
+  var box = $("pushGroups"), stats = $("pushStats"), info = $("pushFilterInfo");
+  var d = PUSH_DATA;
+  if (!d || !d.groups || !d.groups.length){
+    stats.innerHTML = ""; info.textContent = "";
+    box.innerHTML = '<div class="empty">暂无萤石推送记录（webhook 还没收到过萤石推送）</div>'; return;
+  }
+
+  // 按当前筛选条件计算每组可见行
+  var filtered = [], totalShown = 0;
+  for (var i = 0; i < d.groups.length; i++){
+    var items = d.groups[i].items.filter(matchPushFilter);
+    filtered.push({ g: d.groups[i], items: items });
+    totalShown += items.length;
+  }
+  var filteredOn = PUSH_FILTER.person !== "all" || PUSH_FILTER.day !== "all";
+  info.textContent = filteredOn ? ("筛选结果 " + totalShown + " / " + (d.total || 0) + " 条") : "";
+
+  // 统计(全量口径; 筛选激活时第一块改显示筛选结果)
+  var totalCount = 0, deviceSet = {}, typeCount = d.groups.length;
+  for (var i = 0; i < d.groups.length; i++){
+    totalCount += d.groups[i].count;
+    for (var j = 0; j < d.groups[i].items.length; j++){
+      var dev = d.groups[i].items[j].devName || d.groups[i].items[j].serial;
+      if (dev) deviceSet[dev] = 1;
+    }
+  }
+  var deviceCount = Object.keys(deviceSet).length;
+  var allLogs = d.total || totalCount;
+  var firstTime = "—", lastTime = "—";
+  // 第一个分组的最后一条 = 最新一条；最后一个分组的 items 反向时间排，可能不是
+  if (d.groups.length && d.groups[0].items.length){
+    lastTime = d.groups[0].items[0].time || "—";
+    // 找最早一条
+    var minTime = null;
+    for (var g = 0; g < d.groups.length; g++){
+      var its = d.groups[g].items;
+      for (var k = 0; k < its.length; k++){
+        var t = its[k].time;
+        if (t && (!minTime || t < minTime)) minTime = t;
+      }
+    }
+    firstTime = minTime || "—";
+  }
+  stats.innerHTML =
+    '<div class="stat-tile"><div class="label">推送总数</div><div class="val accent">' + (filteredOn ? totalShown : allLogs) + '</div><div class="sub">' + (filteredOn ? ("筛选自 " + allLogs + " 条") : ("近 " + Math.min(300, allLogs) + " 条已加载")) + '</div></div>' +
+    '<div class="stat-tile"><div class="label">消息类型</div><div class="val">' + typeCount + '</div><div class="sub">见下方分组</div></div>' +
+    '<div class="stat-tile"><div class="label">涉及设备</div><div class="val">' + deviceCount + '</div><div class="sub">台</div></div>' +
+    '<div class="stat-tile"><div class="label">最早 / 最新</div><div class="val" style="font-size:14px">' + esc(firstTime.slice(0,16)) + '</div><div class="sub">' + esc(lastTime.slice(0,16)) + '</div></div>';
+
+  // 分组渲染(只渲染有可见行的分组; 筛选后全空给出提示)
+  var shownGroups = filtered.filter(function(x){ return x.items.length; });
+  if (!shownGroups.length){ box.innerHTML = '<div class="empty">没有符合筛选条件的推送记录</div>'; return; }
+  var out = "";
+  PUSH_ITEMS = []; // 每次重渲染重建, 行内 onclick 引用下标
+  for (var i = 0; i < shownGroups.length; i++){
+    var g = shownGroups[i].g, items = shownGroups[i].items;
+    out += '<div class="push-group">' +
+      '<div class="push-group-head" onclick="this.parentNode.classList.toggle(\'collapsed\')">' +
+        '<span class="toggle">▼</span>' +
+        '<span class="name">' + esc(g.name) + '<span class="code">' + esc(g.type) + '</span></span>' +
+        '<span class="count">' + items.length + (items.length !== g.count ? ' / ' + g.count : '') + ' 条</span>' +
+      '</div>' +
+      '<div class="push-rows">';
+    for (var j = 0; j < items.length; j++){
+      var it = items[j];
+      var desc = pushDesc(g.type, it.text);
+      // 缩略图: 后端已匹配同设备±2分钟内的 captures 抓图; 加载失败时移除img, 用 :empty 占位
+      var idx = PUSH_ITEMS.length;
+      PUSH_ITEMS.push(it);
+      var picCell = it.pic
+        ? '<img src="' + esc(it.pic) + '" loading="lazy" alt="推送截图" onclick="openPushPic(' + idx + ')" onerror="this.remove()">'
+        : '';
+      // AI结论: 后端按"同一张抓图/同设备90秒同活动"从 events.json 匹配
+      var aiCell = (it.person === true || it.person === false)
+        ? '<div class="t-ai">' + aiBadgeHtml(it.person) + (it.ai ? '<span class="ai-text">' + esc(it.ai) + '</span>' : '') + '</div>'
+        : '<div class="t-ai none">' + aiBadgeHtml(null) + '</div>';
+      out += '<div class="push-row">' +
+        '<div class="t-pic">' + picCell + '</div>' +
+        '<div class="t-time">' + esc(it.time) + '</div>' +
+        '<div class="t-mid"><div class="t-dev">' + esc(it.devName) + '</div>' + aiCell + '</div>' +
+        '<div class="t-desc' + (desc.muted ? ' muted' : '') + '">' + desc.html + '</div>' +
+      '</div>';
+    }
+    out += '</div></div>';
+  }
+  box.innerHTML = out;
+}
+// 筛选按钮事件(事件委托): data-pf=是否有人, data-df=按天
+document.getElementById("pushFilters").addEventListener("click", function(e){
+  var b = e.target.closest("button"); if (!b) return;
+  var pf = b.getAttribute("data-pf"), df = b.getAttribute("data-df");
+  if (pf){
+    PUSH_FILTER.person = pf;
+    Array.prototype.forEach.call(this.querySelectorAll("[data-pf]"), function(x){ x.classList.toggle("on", x === b); });
+  }
+  if (df){
+    PUSH_FILTER.day = df;
+    Array.prototype.forEach.call(this.querySelectorAll("[data-df]"), function(x){ x.classList.toggle("on", x === b); });
+  }
+  if (pf || df) renderPushGroups();
+});
 
 async function loadModels(){
   try {
