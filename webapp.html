@@ -39,6 +39,7 @@ select{background:var(--btn);color:var(--text);border:1px solid var(--border);bo
 .badge.abn{background:rgba(255,212,59,.2);color:var(--abnormal)}
 .badge.prov{background:rgba(154,167,180,.15);color:var(--text2)}
 .badge.skip{background:rgba(43,37,53,.35);color:#c9a7e8}
+.badge.device{background:rgba(245,197,24,.14);color:var(--accent)}
 .history{padding:0 24px 40px;max-width:1200px;margin:0 auto}
 .history-header{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
 .history-header h2{font-size:16px;flex:1}
@@ -58,6 +59,12 @@ select{background:var(--btn);color:var(--text);border:1px solid var(--border);bo
 .cards.list-view .card{display:flex;align-items:center;margin-bottom:8px}
 .cards.list-view .card img{width:110px;height:78px}
 .card img{width:100%;height:180px;object-fit:cover;display:block;background:#0b0f14}
+/* 无截图占位: 记录本身没有配图(推送时没抓到画面), 或配图已被清理。
+   不加这个占位时, <img src="/captures/"> 加载失败后只剩 180px 的 #0b0f14 黑底 —— 看板上的"黑屏卡片" */
+.card .no-pic{width:100%;height:180px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:#0b0f14;color:#5b6b7c;font-size:12px;user-select:none}
+.card .no-pic .sub{opacity:.55;font-size:11px}
+.cards.list-view .card .no-pic{width:110px;height:78px;gap:1px;font-size:11px}
+.cards.list-view .card .no-pic .sub{display:none}
 .card-meta{padding:10px 14px 4px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .card-meta .t{color:var(--text2);font-size:12px}
 .card-meta .dev{background:#1a3a4a;color:#7cc4ff;border-radius:4px;padding:2px 8px;font-size:12px}
@@ -302,7 +309,19 @@ function pushDesc(type, text){
 
 // ---- 推送截图灯箱: 点击缩略图在当前页放大, 点击遮罩/×/Esc 关闭 ----
 var PUSH_ITEMS = []; // 与行渲染顺序一致, 供灯箱取回该项的时间/设备/AI结论
-function aiBadgeHtml(person){
+// 这条记录到底有没有真跑过 AI。"(点击AI分析)"/"(等待分析...)"只是占位文案 ——
+// 萤石设备端"人形检测"(报警码 15504 / IntelligentTag 的 human 标签)直通进来的记录就是这种:
+// webhook.js 里 person 被无条件置 true, 从头到尾没调用过任何模型。
+// 以前它和"AI 明确判有人"的记录在卡片上是同一个红色"有人", 看起来都像 AI 说的,
+// 其实前者是设备端算法报的(对风吹树影很敏感, 误报多)。
+function hasAiVerdict(ai){
+  return !!(ai && ai !== "(点击AI分析)" && ai !== "(等待分析...)");
+}
+// 有人/无人标签。没有 AI 结论时如实标成"设备端", 不冒充 AI 的判定结果。
+function aiBadgeHtml(person, ai){
+  if (ai !== undefined && !hasAiVerdict(ai)) {
+    return person ? '<span class="badge device">人形·设备端</span>' : '<span class="badge prov">无AI结论</span>';
+  }
   if (person === true) return '<span class="badge person">有人</span>';
   if (person === false) return '<span class="badge nobody">无人</span>';
   return '<span class="badge prov">无AI结论</span>';
@@ -311,7 +330,7 @@ function openPushPic(i){
   var it = PUSH_ITEMS[i]; if (!it || !it.pic) return;
   $("lbImg").src = it.pic;
   $("lbInfo").innerHTML =
-    '<div class="lb-head">' + aiBadgeHtml(it.person) + '<span>' + esc(it.time) + ' · ' + esc(it.devName) + '</span></div>' +
+    '<div class="lb-head">' + aiBadgeHtml(it.person, it.ai) + '<span>' + esc(it.time) + ' · ' + esc(it.devName) + '</span></div>' +
     (it.ai ? '<div>' + esc(it.ai) + '</div>'
            : '<div class="muted-note">该图片没有匹配到 AI 判读记录（普通移动侦测消息默认不做 AI 分析）</div>');
   $("pushLightbox").classList.add("open");
@@ -426,7 +445,7 @@ function renderPushGroups(){
         : '';
       // AI结论: 后端按"同一张抓图/同设备90秒同活动"从 events.json 匹配
       var aiCell = (it.person === true || it.person === false)
-        ? '<div class="t-ai">' + aiBadgeHtml(it.person) + (it.ai ? '<span class="ai-text">' + esc(it.ai) + '</span>' : '') + '</div>'
+        ? '<div class="t-ai">' + aiBadgeHtml(it.person, it.ai) + (hasAiVerdict(it.ai) ? '<span class="ai-text">' + esc(it.ai) + '</span>' : '') + '</div>'
         : '<div class="t-ai none">' + aiBadgeHtml(null) + '</div>';
       out += '<div class="push-row">' +
         '<div class="t-pic">' + picCell + '</div>' +
@@ -499,9 +518,12 @@ async function analyze(){
     img.src = "/captures/" + d.file + "?t=" + Date.now();
     $("liveStatus").textContent = "分析完成 · " + d.time;
     $("resultText").textContent = d.ai;
-    var b = d.person ? '<span class="badge person">有人</span>' : '<span class="badge nobody">无人</span>';
+    // matched===false 表示 AI 输出格式漂移、结论没读懂 —— 这时不显示"无人"(会误导), 改为明确提示
+    var b = d.matched === false
+      ? '<span class="badge abn">未识别出结论</span>'
+      : aiBadgeHtml(d.person, d.ai);
     if (d.abnormal) b += '<span class="badge abn">异常</span>';
-    b += '<span class="badge prov">' + esc(d.provider) + "</span>";
+    if (d.provider) b += '<span class="badge prov">' + esc(d.provider) + "</span>";
     $("resultBadges").innerHTML = b;
     $("resultBox").classList.add("show");
     loadHistory(true);
@@ -572,20 +594,40 @@ async function checkAlarms(){
   finally { btn.disabled = false; btn.textContent = oldHtml; }
 }
 
+// 图片加载失败(记录里的 file 指向的图已被清理/从未落地)时换成占位, 避免留下一块黑底
+function picFallback(img){
+  var d = document.createElement("div");
+  d.className = "no-pic";
+  d.innerHTML = '<span>截图已失效</span><span class="sub">文件已被清理</span>';
+  if (img.parentNode) img.parentNode.replaceChild(d, img);
+}
+
 function renderCards(events){
   var box = $("cards");
   if (!events.length){ box.innerHTML = '<div class="empty">暂无报警记录</div>'; return; }
   var out = "";
   for (var i = 0; i < events.length; i++){
     var e = events[i];
-    var badges = e.person ? '<span class="badge person">有人</span>' : '<span class="badge nobody">无人</span>';
+    // 是否有人: 没有 AI 结论的记录(萤石设备端人形标签直通进来的)不再冒充成 AI 的"有人"
+    var badges = aiBadgeHtml(e.person, e.ai);
     if (e.abnormal) badges += '<span class="badge abn">异常</span>';
-    badges += '<span class="badge prov">' + esc(e.provider) + "</span>";
+    // provider 为空时以前会渲染出一个空的灰块, 现在干脆不渲染
+    if (e.provider) badges += '<span class="badge prov">' + esc(e.provider) + "</span>";
     if (!e.pushed) badges += '<span class="badge skip">未推送</span>';
-    out += '<div class="card" data-file="' + encodeURIComponent(e.file) + '">' +
-      '<input type="checkbox" class="select-box" data-file="' + encodeURIComponent(e.file) + '">' +
-      '<img loading="lazy" src="/captures/' + encodeURIComponent(e.file) + '">' +
-      '<button class="del-btn" data-file="' + encodeURIComponent(e.file) + '">删除</button>' +
+    var fileEnc = encodeURIComponent(e.file || "");
+    // 选中/删除的定位键。空 file 的记录(没截到图)靠 file 根本区分不开 —— 都等于 "",
+    // Set 里存一个空串就只能选中一条, 删除时还会误伤全部。改用 设备+时间戳 做键。
+    var evKey = esc(e.serial) + "@" + (e.ts || 0);
+    // 记录可能压根没有配图(萤石人形标签消息不带截图、兜底抓图又失败时, file 是空串)。
+    // 原来这里无条件拼 <img src="/captures/">, 请求 404 后只剩 .card img 的黑色底 → 黑屏卡片。
+    // 现在: 没图直接渲染占位(也不发无效请求), 有图但文件已被清理则由 onerror 换成同样的占位。
+    var pic = e.file
+      ? '<img loading="lazy" src="/captures/' + fileEnc + '" onerror="picFallback(this)">'
+      : '<div class="no-pic"><span>无截图</span><span class="sub">推送时未取到画面</span></div>';
+    out += '<div class="card" data-file="' + fileEnc + '" data-key="' + evKey + '" data-ts="' + (e.ts || "") + '" data-serial="' + esc(e.serial) + '">' +
+      '<input type="checkbox" class="select-box" data-key="' + evKey + '">' +
+      pic +
+      '<button class="del-btn">删除</button>' +
       '<div class="card-meta"><span class="t">' + esc(e.time) + '</span><span class="dev">' + esc(e.name) + '</span><span class="title">' + esc(e.title) + "</span></div>" +
       '<div class="card-badges">' + badges + "</div>" +
       '<div class="card-ai">' + esc(e.ai) + "</div>" +
@@ -611,40 +653,54 @@ function loadHistory(silent){
     });
 }
 
-async function deleteEvent(fileEnc){
+// 从卡片上读出定位信息(卡片上的 data-file 是编码过的)。没有配图的记录 file 为空串,
+// 必须靠 data-ts/data-serial 才能在后端被唯一认出来。
+function cardLocator(card){
+  return { file: decodeURIComponent(card.getAttribute("data-file") || ""),
+           ts: Number(card.getAttribute("data-ts")) || 0,
+           serial: card.getAttribute("data-serial") || "" };
+}
+
+async function deleteEvent(key, loc){
   try {
-    await fetch("/api/events/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ file: decodeURIComponent(fileEnc) }) });
-    selectedFiles.delete(decodeURIComponent(fileEnc));
+    await fetch("/api/events/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(loc) });
+    if (key) selectedKeys.delete(key);
     loadHistory(true);
   } catch(e){ console.error("删除失败", e); }
 }
 
 // ---- 批量操作 ----
-var selectedFiles = new Set();
+// 存的是 data-key(设备@时间戳)而不是 file: 空 file 的记录用 file 做键会互相顶掉,
+// 结果就是多条无图记录只能选中一条, 删除时还会把别的无图记录一起误删。
+var selectedKeys = new Set();
 function updateBulkBar(){
   var bar = $("bulkBar"), info = $("selInfo");
-  if (selectedFiles.size > 0){ bar.classList.add("show"); info.textContent = "已选 " + selectedFiles.size + " 条"; }
+  if (selectedKeys.size > 0){ bar.classList.add("show"); info.textContent = "已选 " + selectedKeys.size + " 条"; }
   else { bar.classList.remove("show"); }
   // 同步卡片选中样式
   Array.prototype.forEach.call(document.querySelectorAll(".card"), function(card){
-    var f = card.getAttribute("data-file");
-    card.classList.toggle("selected", f && selectedFiles.has(decodeURIComponent(f)));
+    card.classList.toggle("selected", selectedKeys.has(card.getAttribute("data-key")));
   });
 }
 async function deleteAllEvents(){
   if (!confirm("确定删除全部 " + $("cards").querySelectorAll(".card").length + " 条记录吗？此操作不可恢复！")) return;
   try {
     await fetch("/api/events/delete-all", { method: "POST" });
-    selectedFiles.clear();
+    selectedKeys.clear();
     loadHistory(true);
   } catch(e){ console.error("全部删除失败", e); }
 }
 async function deleteSelected(){
-  if (selectedFiles.size === 0) return;
-  if (!confirm("确定删除选中的 " + selectedFiles.size + " 条记录吗？")) return;
+  if (selectedKeys.size === 0) return;
+  if (!confirm("确定删除选中的 " + selectedKeys.size + " 条记录吗？")) return;
   try {
-    await fetch("/api/events/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ files: Array.from(selectedFiles) }) });
-    selectedFiles.clear();
+    // 从选中的卡片收集完整定位信息(而不是只发文件名): 无图记录没有文件名可用
+    var items = [];
+    Array.prototype.forEach.call(document.querySelectorAll(".card"), function(card){
+      if (selectedKeys.has(card.getAttribute("data-key"))) items.push(cardLocator(card));
+    });
+    await fetch("/api/events/delete", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ items: items }) });
+    selectedKeys.clear();
     loadHistory(true);
   } catch(e){ console.error("删除选中失败", e); }
 }
@@ -692,13 +748,14 @@ Array.prototype.forEach.call(document.querySelectorAll(".fb"), function(btn){
 $("cards").addEventListener("click", function(ev){
   var t = ev.target;
   if (t && t.classList && t.classList.contains("del-btn")) {
-    if (confirm("确定删除这条记录吗？")) deleteEvent(t.getAttribute("data-file"));
+    var dc = t.closest(".card");
+    if (dc && confirm("确定删除这条记录吗？")) deleteEvent(dc.getAttribute("data-key"), cardLocator(dc));
     return;
   }
   // 复选框点击
   if (t && t.classList && t.classList.contains("select-box")){
-    var f = decodeURIComponent(t.getAttribute("data-file"));
-    if (t.checked) selectedFiles.add(f); else selectedFiles.delete(f);
+    var k = t.getAttribute("data-key");
+    if (t.checked) selectedKeys.add(k); else selectedKeys.delete(k);
     updateBulkBar();
     return;
   }
@@ -720,12 +777,12 @@ $("cards").addEventListener("click", function(ev){
 
 // 批量操作按钮
 $("btnSelectAll").addEventListener("click", function(){
-  Array.prototype.forEach.call(document.querySelectorAll(".select-box"), function(cb){ cb.checked = true; selectedFiles.add(decodeURIComponent(cb.getAttribute("data-file"))); });
+  Array.prototype.forEach.call(document.querySelectorAll(".select-box"), function(cb){ cb.checked = true; selectedKeys.add(cb.getAttribute("data-key")); });
   updateBulkBar();
 });
 $("btnDeselectAll").addEventListener("click", function(){
   Array.prototype.forEach.call(document.querySelectorAll(".select-box"), function(cb){ cb.checked = false; });
-  selectedFiles.clear();
+  selectedKeys.clear();
   updateBulkBar();
 });
 $("btnDeleteSel").addEventListener("click", deleteSelected);

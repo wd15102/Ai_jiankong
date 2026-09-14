@@ -56,6 +56,43 @@
 **智能判人，省配额**
 只在**移动侦测报警**时才抓图 + 调 AI；AI 判断「有人或异常」才推送微信，无人只记日志。AI 全渠道失败也会告警（5 分钟限频），避免监控悄悄失效。
 
+判人结论统一由 `lib/judge.js` 解析（三个服务共用同一份实现，不再各写一份正则）。它按「显式标记 `【有人】/【无人】` → 首行裸结论 → 逐句否定优先」三级判定，能正确处理「画面中没有人」和「画面中有一个人」这类叙述式结论。AI 输出格式漂移、结论读不懂时，报警链路**不拦截推送**并打警告日志（`⚠ AI结论无法解析`），避免漏报；看板则显示「未识别出结论」而不是误标成「无人」。
+
+存量记录如果被旧逻辑判错过，用 `node tools/rejudge_events.js` 预演、`--apply` 写盘校正（会先自动备份 `events.json`）。
+
+**看板上的「有人」是谁下的？**
+有两种来源，别混为一谈：
+
+- **AI 判定** —— 记录带 `provider`（`Agnes` / `GLM-4v`），是视觉大模型看过图之后的结论。
+- **设备端判定** —— `provider` 为空、`ai` 是 `(点击AI分析)` 这种占位文案。这是萤石相机自己的人形检测（报警码 `15504` / IntelligentTag 的 human 标签）报上来的，`webhook.js` 会**无条件采信**（`person: Boolean(isPersonType || personByText)`），从头到尾没调用过模型。设备端算法对风吹树影、光斑变化很敏感，误报不少。
+
+看板对两者用不同措辞区分：只有拿到 AI 结论才显示红色「有人」，仅有设备端结论时显示黄色「人形·设备端」。
+
+`config.json → ai.prompt` 明确要求：只有能分辨出**头部与躯干**才算人；阴影、树影、反光光斑、门框、雕塑、挂着的衣物、塑料袋、宠物一律不算；**禁止**用「似乎/可能/好像」充当判「有人」的理由，拿不准必须判「无人」。历史教训：旧 prompt 里那句「请仔细检查远处的人形轮廓」等于逼模型必须找出一个人，实测让 `glm-4v-flash` 对一张只有树影和柱子的画面编出「有一个人影正在行走，旁边还有一只狗」。
+
+存量的设备端记录（`person=true` 但没有任何 AI 结论）用 `node tools/recheck_events.js` 复核：默认只列清单不调 AI，`--apply` 才真正判读并写回 `person`/`provider`/`ai`（`ts`/`time`/`pushed` 一律不动），另有 `--file <存图名>` 点名单条、`--limit N` 限制条数、`--channel <渠道名>` 指定模型。
+
+**报警记录的配图**
+萤石对同一次活动会连推数条消息（人形标签**不带**截图、智能侦测带截图），两条几乎同时到达。若人形标签那条先落库，而它的「复用同活动存图」和「兜底抓图」都没成功，就会留下一条没有配图的记录 —— 看板上原本表现为一块黑屏。现在 `webhook.js` 在事务**锁内**做了补图：同一次活动已有记录但缺截图时，会用后来那条的截图补到它身上，而不是再加一条；前端对没有配图的记录渲染「无截图」占位，图片被清理时也会换成「截图已失效」，不再出现黑屏。
+
+存量的无图记录用 `node tools/repair_noimage_events.js` 预演、`--apply` 写盘找回配图 —— 按「同设备 + 时间邻近」认领那张其实早就躺在 `captures/` 里、只是没有任何记录引用它的图。
+
+**数据写入约定（改代码前务必看）**
+`data/events.json` 被 `webhook.js` / `webapp.js` / `monitor.js` **三个独立进程**同时读写，所以**不要**再写「读全量 → 改 → 写全量」。统一用 `lib/store.js` 的事务接口：
+
+```js
+await store.updateEvents(ROOT, function (arr) {
+  arr.push(newRec);   // 这里必须是同步代码, 不能有 await
+  return true;        // 返回 false = 内容无变化, 跳过写盘
+}, { cap: store.eventCap(cfg) });
+```
+
+它会在**锁内重新读最新内容**再交给 mutator，所以「读到写」之间夹了 `await` 也不会丢事件。
+需要异步准备（下载图片、调 AI）就先做完、收集到一个数组里，最后一次性提交。
+返回值的 `{ ok, written }` 必须处理：`ok=false` 表示没抢到锁、本次改动被放弃。
+
+回归测试：`node tools/stress_events.js`（6 进程 × 120 条并发写，对照无锁实现会丢 600+ 条）。
+
 **语义化推送**
 标题形如 `亲爱的东哥 检测到双溪村-CP1云台机有人员活动`，点击卡片进入详情页看现场原图 + AI 结论（图片可点击放大、双指缩放）。
 
@@ -107,15 +144,31 @@ copy config.example.json config.json     # 然后填入自己的密钥
 ├── lib/
 │   ├── ys7.js          # 萤石平台客户端（token 缓存 / 抓图 / 报警 / 云台）
 │   ├── ai.js           # 多渠道视觉模型分析 + 故障切换
+│   ├── judge.js        # 判人/异常结论的唯一实现（三个服务共用，改这里就够）
+│   ├── store.js        # data/*.json 的跨进程文件锁 + 读-改-写事务（三个服务共用同一把锁）
 │   └── push.js         # 推送通道（wecombot / wxpusher / ntfy）
+├── tools/
+│   ├── update_menu.js      # 追加公众号「历史记录」菜单（幂等）
+│   ├── rejudge_events.js        # 用最新判人逻辑校正存量 events.json（默认预演，--apply 才写盘）
+│   ├── recheck_events.js        # 用当前 prompt 复核「设备端人形标签直通、没跑过 AI」的存量记录
+│   ├── repair_noimage_events.js # 给没配图的记录找回截图（默认预演，--apply 才写盘）
+│   ├── sweep_captures.js        # 清理历史遗留的孤儿抓图（默认预演，--apply 才删）
+│   └── stress_events.js         # 多进程并发写 events.json 的回归测试（对照组 vs 加锁组）
 ├── config.example.json # 脱敏配置模板
 ├── config.json         # 真实配置（gitignore，含密钥）
 ├── public/ezuikit/     # 萤石直播播放器静态资源
 ├── data/               # 运行时数据（gitignore，代码自动创建）
 ├── captures/           # 抓图存档（gitignore，代码自动创建）
+│   └── motion/         # 普通移动侦测的临时图：只为「同一次活动垫图」存在，默认 3 小时回收
 ├── docs/               # 文档
 └── *.bat               # Windows 快捷启动脚本
 ```
+
+> **抓图为什么要分两个目录？** 萤石推来的消息里约八成是「普通移动侦测」（车开过、树叶晃动、光斑变化）。
+> 这类消息高频、不推微信、不进看板，截图下载后没有任何记录引用它 —— 全堆在 `captures/` 就成了只占磁盘、
+> 任何界面都看不到的孤儿图（实测占 96%）。所以现在把它们单独放到 `captures/motion/`，只保留
+> `storage.motionRetentionHours`（默认 3 小时）供垫图当备用帧，被选中的会搬回主目录长期留存；主目录
+> 只放事件图（人形、车辆、AI 结论等），按 `storage.captureRetentionDays`（默认 60 天）清理。
 
 ---
 
@@ -154,6 +207,7 @@ copy config.example.json config.json     # 然后填入自己的密钥
 | GET | `/api/live-url` | 直播地址 |
 | GET | `/api/ptz` | 云台控制（`serial` + `dir=up/down/left/right`，仅 `ptz:true` 设备） |
 | GET | `/captures/xxx.jpg` | 抓图原图 |
+| GET | `/captures/motion/xxx.jpg` | 移动侦测临时图（只留 `storage.motionRetentionHours`，供推送记录页关联展示） |
 | GET | `/__shutdown` | 优雅停止（启动脚本用） |
 
 **webapp.js :8790**

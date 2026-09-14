@@ -8,32 +8,14 @@ echo ==============================================
 echo.
 
 :: ---------- [1/4] 隧道 ----------
-:: 读固定 URL (Tailscale Funnel: config.wxTest.publicBase)
+:: 读取 config.json 中 wxTest.publicBase (花生壳外网域名)
 set "TUNNEL_URL="
 for /f "delims=" %%u in ('node -e "var c=require('./config.json');console.log((c&&c.wxTest&&c.wxTest.publicBase)||'')"') do set "TUNNEL_URL=%%u"
-:: 判断是否配置了 cloudflared 命名隧道
-set "TNAME=NONE"
-for /f "delims=" %%n in ('node -e "var c=require('./config.json');console.log((c&&c.cfTunnel&&c.cfTunnel.name)||'NONE')"') do set "TNAME=%%n"
-if not "%TNAME%"=="NONE" goto :cf_named
-goto :ts_funnel
-
-:ts_funnel
-echo [1/4] 隧道模式: Tailscale Funnel (固定URL)
-:: 停掉可能残留的 cloudflared, 避免端口冲突
+:: 停掉可能残留的 cloudflared / tailscale 进程, 避免端口冲突
 taskkill /F /IM cloudflared.exe >nul 2>&1
-:: 确保 Funnel 开启 (幂等, 已开则无操作)
-"C://Program Files//Tailscale//tailscale.exe" funnel --bg 8787
-if not defined TUNNEL_URL set "TUNNEL_URL=https://你的域名.ts.net"
-goto :start_services
-
-:cf_named
-echo [1/4] 隧道模式: Cloudflared 命名隧道 (name=%TNAME%)
-taskkill /F /IM cloudflared.exe >nul 2>&1
-timeout /t 1 /nobreak >nul
-start "" /min cloudflared.exe tunnel run %TNAME%
-timeout /t 5 /nobreak >nul
-if not defined TUNNEL_URL set "TUNNEL_URL=https://%TNAME%.cfargotunnel.com"
-
+:: 花生壳客户端由用户手动开启并映射 127.0.0.1:8787, 本脚本不启动任何隧道
+echo [1/4] 隧道模式: 花生壳内网穿透 (请确保花生壳客户端已运行)
+if not defined TUNNEL_URL set "TUNNEL_URL=http://你的域名.vicp.fun"
 :start_services
 echo.
 echo [2/4] 停止旧服务...

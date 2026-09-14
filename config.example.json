@@ -29,8 +29,10 @@
   "watchIntervalSec": 300,
 
   "storage": {
-    "_说明": "captureRetentionDays=抓图存档(captures/)保留天数, 超过自动删除(原图+缩略图); web服务每天清理一次。留空或删掉整个块则默认90天",
-    "captureRetentionDays": 90
+    "_说明": "captureRetentionDays=事件图(captures/)保留天数, 默认60天(2个月), 超过自动删除; motionRetentionHours=普通移动侦测暂存图(captures/motion/)保留小时数, 默认3小时 —— 这类图高频、不进看板, 只为「同一次活动的垫图」临时存在, 不参与长期档案; eventRetention=报警记录(events.json)最大保留条数, 撑起公众号「历史查询/历史日报」, 默认20000条。web服务每小时清理一次。留空或删掉整个块则用默认值",
+    "captureRetentionDays": 60,
+    "motionRetentionHours": 3,
+    "eventRetention": 20000
   },
 
   "ai": {

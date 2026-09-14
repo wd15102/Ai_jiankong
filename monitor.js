@@ -11,6 +11,8 @@ const path = require("path");
 const { createClient } = require("./lib/ys7");
 const { analyzeImage } = require("./lib/ai");
 const { push } = require("./lib/push");
+const { judgePerson } = require("./lib/judge"); // 判人逻辑唯一实现(与 webapp/webhook 共用)
+const store = require("./lib/store"); // events.json 跨进程事务存储(与 webapp/webhook 共用同一把锁)
 
 const ROOT = __dirname;
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "config.json"), "utf8"));
@@ -51,28 +53,14 @@ function saveState(s) {
   fs.writeFileSync(path.join(ROOT, "data", "state.json"), JSON.stringify(s, null, 2));
 }
 
-// 写 Web 看板事件记录（报警画面+AI结论，最多保留500条）
+// 写 Web 看板事件记录（报警画面+AI结论）
+// 走 lib/store 的跨进程事务: 锁内重读最新 events.json 再追加, 避免与 webhook/webapp 的写入互相覆盖。
+// 保留上限统一读 config.json 的 storage.eventRetention(原来这里硬编码 20000, 改配置等于没改)。
 function recordEvent(ev) {
-  const f = path.join(ROOT, "data", "events.json");
-  let arr = [];
-  try {
-    arr = JSON.parse(fs.readFileSync(f, "utf8"));
-    if (!Array.isArray(arr)) arr = [];
-  } catch (e) {
-    // 解析失败(并发写被打断): 损坏文件留档再从空开始, 避免静默丢失全部历史
-    try { if (fs.existsSync(f) && fs.statSync(f).size > 0) fs.copyFileSync(f, f + ".corrupt." + Date.now()); } catch (e2) {}
-    arr = [];
-  }
-  arr.push(ev);
-  if (arr.length > 500) arr = arr.slice(-500);
-  fs.mkdirSync(path.dirname(f), { recursive: true });
-  const content = JSON.stringify(arr, null, 1);
-  // 先写临时文件再改名, 避免webhook/看板读到写了一半的内容; 改名被占用时退回直写
-  try {
-    fs.writeFileSync(f + ".tmp", content);
-    try { fs.renameSync(f + ".tmp", f); }
-    catch (e3) { fs.writeFileSync(f, content); fs.unlinkSync(f + ".tmp"); }
-  } catch (e4) { console.log("  [警告] events.json 写入失败: " + e4.message.slice(0, 80)); }
+  return store.updateEvents(ROOT, function (arr) {
+    arr.push(ev);
+    return true;
+  }, { cap: store.eventCap(cfg) });
 }
 
 // AI 全渠道失败的通知限频：5分钟最多推一次，避免刷屏
@@ -86,19 +74,8 @@ function shouldNotifyAIFail(state) {
   return false;
 }
 
-// 判定 AI 结论是否为"有人/异常"
-function judgePerson(content) {
-  const c = String(content);
-  const m = c.match(/【(有人|无人)】/);
-  let person;
-  if (m) person = m[1] === "有人";
-  else if (/^\s*无人/.test(c.trim()) || /【无人】/.test(c)) {
-    person = false; // 行首"无人"(config自定义prompt不带括号)优先判定: 防"未见人员活动"误命中下面的关键词
-  }
-  else person = /(有人|人员活动|检测到人|出现人|一个人)/.test(c);
-  const abnormal = /(异常|需关注|注意|陌生|闯入)/.test(c) && !/无异常/.test(c);
-  return { person: person === true, abnormal: abnormal };
-}
+// 判定 AI 结论是否为"有人/异常" —— 实现已收敛到 lib/judge.js
+// (原实现里 /^\s*无人/ 缺 m 标志 + 关键词命中子串, 会把"没有人""未见人员活动"误判成有人)
 
 async function analyzeAndPush(serial, file, extraTitle, opts) {
   opts = opts || {};
@@ -124,9 +101,11 @@ async function analyzeAndPush(serial, file, extraTitle, opts) {
       const j = judgePerson(r.content);
       person = j.person;
       abnormal = j.abnormal;
+      // 结论解析不出来(格式漂移): 打警告便于排查, 但仍按"未识别到有人"处理, 保持原有门控策略
+      if (!j.matched) console.log("  [警告] AI结论无法解析(依据=" + j.source + "), 按'无人'处理: " + r.content.replace(/\s+/g, " ").slice(0, 60));
       if (!opts.bypassGate && cfg.ai.pushOnlyWhenPerson !== false) {
         shouldPush = j.person || j.abnormal;
-        console.log("  判定: " + (j.person ? "!! 有人" : "无人") + (j.abnormal ? " / 含异常描述" : "") + " -> " + (shouldPush ? "推送" : "不推送"));
+        console.log("  判定: " + (j.person ? "!! 有人" : "无人") + (j.abnormal ? " / 含异常描述" : "") + " (依据:" + j.source + ") -> " + (shouldPush ? "推送" : "不推送"));
       }
     }
   } else {
@@ -143,7 +122,7 @@ async function analyzeAndPush(serial, file, extraTitle, opts) {
   }
 
   // 写 Web 看板：报警画面 + AI 结论
-  recordEvent({
+  await recordEvent({
     ts: Date.now(),
     time: new Date().toLocaleString("zh-CN", { hour12: false }),
     serial: serial,

@@ -8,11 +8,13 @@ const os = require("os");
 const crypto = require("crypto");
 const { createClient } = require("./lib/ys7");
 const { analyzeImage } = require("./lib/ai");
+const { judgePerson } = require("./lib/judge"); // 判人逻辑唯一实现(与 monitor/webhook 共用)
+const store = require("./lib/store"); // events.json 跨进程事务存储(与 monitor/webhook 共用同一把锁)
 
 const ROOT = __dirname;
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "config.json"), "utf8"));
 const PORT = ((cfg.webapp || {}).port) || 8790;
-const VERSION = "2026-08-25.25";
+const VERSION = "2026-09-12.26"; // +events.json 改为 lib/store 跨进程事务(文件锁+锁内重读), 修复与 webhook/monitor 并发写互相覆盖导致的丢事件
 
 // ---------- Web 看板鉴权：防止公网隧道下被未授权抓图/删记录/一键关服 ----------
 // 本地 127.0.0.1 访问免令牌（同机/SSH 转发均视为本地）；非本地访问敏感接口必须带 ?token=xxx
@@ -94,41 +96,16 @@ const PAGE = fs.existsSync(path.join(ROOT, "webapp.html"))
   ? fs.readFileSync(path.join(ROOT, "webapp.html"), "utf8")
   : "<h1>webapp.html 未找到</h1>";
 
-function loadEvents() {
-  const f = path.join(ROOT, "data", "events.json");
-  try {
-    const arr = JSON.parse(fs.readFileSync(f, "utf8"));
-    return Array.isArray(arr) ? arr : [];
-  } catch (e) {
-    // 解析失败(并发写被打断): 损坏文件留档再返回空, 避免静默丢失全部历史
-    try { if (fs.existsSync(f) && fs.statSync(f).size > 0) fs.copyFileSync(f, f + ".corrupt." + Date.now()); } catch (e2) {}
-    return [];
-  }
-}
-function saveEvents(arr) {
-  if (arr.length > 500) arr = arr.slice(-500);
-  fs.mkdirSync(path.join(ROOT, "data"), { recursive: true });
-  const f = path.join(ROOT, "data", "events.json");
-  const content = JSON.stringify(arr, null, 1);
-  // 先写临时文件再改名, 避免其他服务读到写了一半的内容; 改名被占用时退回直写
-  try {
-    fs.writeFileSync(f + ".tmp", content);
-    try { fs.renameSync(f + ".tmp", f); }
-    catch (e) { fs.writeFileSync(f, content); fs.unlinkSync(f + ".tmp"); }
-  } catch (e2) {}
-}
-function recordEvent(ev) { const arr = loadEvents(); arr.push(ev); saveEvents(arr); }
-function deleteEventByFile(file) { saveEvents(loadEvents().filter(function(e){ return e.file !== file; })); return true; }
-
-function judgePerson(content) {
-  const c = String(content || "");
-  const m = c.match(/【(有人|无人)】/);
-  // 行首"无人"(config自定义prompt不带括号)优先判定: 防"未见人员活动"误命中关键词
-  let person = m ? (m[1] === "有人") : (/^\s*无人/.test(c.trim()) || /【无人】/.test(c) ? false : /(有人|人员活动|检测到人|出现人|一个人)/.test(c));
-  const negated = /(无异常|没有.*?异常|看不到.*?异常|未发现.*?异常)/.test(c);
-  const abnormal = /(异常|需关注|注意|陌生|闯入)/.test(c) && !negated;
-  return { person: person, abnormal: abnormal };
-}
+// events.json 统一走 lib/store: 跨进程文件锁 + 「锁内重读最新内容再改」的事务。
+// 原来 loadEvents -> 改 -> saveEvents 的写法会和 webhook/monitor 的写入互相整份覆盖(丢事件)。
+function loadEvents() { return store.readEvents(ROOT); }
+// 提交一次 events.json 事务。mutate 必须是**同步**函数:
+//   返回 false -> 内容无变化, 不写盘; 返回数组 -> 整体替换; 其他 -> 用原地修改后的数组
+// 返回 { ok, written }: ok=false 表示没拿到锁(改动被放弃), 调用方必须处理
+function mutateEvents(mutate) { return store.updateEvents(ROOT, mutate, { cap: store.eventCap(cfg) }); }
+function recordEvent(ev) { return mutateEvents(function (arr) { arr.push(ev); return true; }); }
+// (原 deleteEventByFile 已移除: 删除统一走 /api/events/delete 的 items 定位 —— 没有配图的记录
+//  file 是空串, 只按 file 匹配既分不清是哪一条、又会连同其他无图记录一起删掉。)
 
 function sendJson(res, code, obj) {
   res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -166,20 +143,28 @@ function loadPushLog() {
 // 推送记录按"同设备 ±2分钟内最近的抓图"关联(与 webhook 复用存图的窗口一致)
 function loadCaptureIndex() {
   const idx = {};
-  try {
-    for (const f of fs.readdirSync(path.join(ROOT, "captures"))) {
-      if (!/\.jpg$/i.test(f)) continue;
-      const us = f.indexOf("_");
-      if (us <= 0) continue;
-      const serial = f.slice(0, us);
-      let rest = f.slice(us + 1, -4);
-      if (rest.charAt(0) === "p") rest = rest.slice(1);
-      const t = Number(rest);
-      if (!isFinite(t) || t <= 0) continue;
-      if (!idx[serial]) idx[serial] = [];
-      idx[serial].push({ t: t, file: f });
-    }
-  } catch (e) {}
+  // 两个目录都要扫: 事件图在 captures/, 普通移动侦测的截图在 captures/motion/(见 webhook.js 的分级留存)。
+  // 不扫 motion 的话, 推送记录页里占八成以上的移动侦测条目会全部变成"没有关联图"。
+  const dirs = [
+    { d: path.join(ROOT, "captures"), pre: "/captures/" },
+    { d: path.join(ROOT, "captures", "motion"), pre: "/captures/motion/" }
+  ];
+  for (const src of dirs) {
+    try {
+      for (const f of fs.readdirSync(src.d)) {
+        if (!/\.jpg$/i.test(f)) continue;
+        const us = f.indexOf("_");
+        if (us <= 0) continue;
+        const serial = f.slice(0, us);
+        let rest = f.slice(us + 1, -4);
+        if (rest.charAt(0) === "p") rest = rest.slice(1);
+        const t = Number(rest);
+        if (!isFinite(t) || t <= 0) continue;
+        if (!idx[serial]) idx[serial] = [];
+        idx[serial].push({ t: t, file: f, pre: src.pre });
+      }
+    } catch (e) {} // motion/ 还没产生过: 静默跳过
+  }
   return idx;
 }
 function findCapturePic(idx, serial, refMs) {
@@ -190,7 +175,7 @@ function findCapturePic(idx, serial, refMs) {
     if (Math.abs(x.t - refMs) > 120e3) continue;
     if (!best || Math.abs(x.t - refMs) < Math.abs(best.t - refMs)) best = x;
   }
-  return best ? "/captures/" + best.file : "";
+  return best ? best.pre + best.file : "";
 }
 function buildPushGroups(limit) {
   // 只展示"移动侦测"(含 VMD/video_motion/10002) 和"宠物侦测"两个分类, 其他全过滤
@@ -321,20 +306,24 @@ async function doAnalyze(serial, modelName, existFile) {
   const r = await analyzeImage(singleCfg, path.join(ROOT, "captures", cap.file));
   if (!r.ok) throw new Error(r.reason);
   const j = judgePerson(r.content);
-  // 如果该文件已有记录则更新，否则新增
-  var eventsArr = loadEvents();
-  var existing = eventsArr.find(function(e){ return e.file === cap.file; });
-  if (existing) {
-    existing.ai = r.content;
-    existing.person = j.person;
-    existing.abnormal = j.abnormal;
-    existing.provider = providerLabel(selected.name);
-    existing.time = new Date().toLocaleString("zh-CN",{hour12:false});
-    saveEvents(eventsArr);
-  } else {
-    recordEvent({ ts: Date.now(), time: new Date().toLocaleString("zh-CN",{hour12:false}), serial: serial, name: devName(serial), file: cap.file, title: "Web实时分析", provider: providerLabel(selected.name), ai: r.content, person: j.person, abnormal: j.abnormal, pushed: false });
-  }
-  return { file: cap.file, ai: r.content, provider: providerLabel(selected.name), person: j.person, abnormal: j.abnormal, time: new Date().toLocaleString("zh-CN",{hour12:false}) };
+  if (!j.matched) console.log("[AI] 结论无法解析(依据=" + j.source + "), 已标记: " + r.content.replace(/\s+/g, " ").slice(0, 60));
+  // 如果该文件已有记录则更新，否则新增(放在同一个事务里, 避免"读完"到"写入"之间被别的进程插入)
+  const nowStr = new Date().toLocaleString("zh-CN",{hour12:false});
+  await mutateEvents(function (eventsArr) {
+    var existing = eventsArr.find(function(e){ return e.file === cap.file; });
+    if (existing) {
+      existing.ai = r.content;
+      existing.person = j.person;
+      existing.abnormal = j.abnormal;
+      existing.provider = providerLabel(selected.name);
+      existing.time = nowStr;
+      return true;
+    }
+    eventsArr.push({ ts: Date.now(), time: nowStr, serial: serial, name: devName(serial), file: cap.file, title: "Web实时分析", provider: providerLabel(selected.name), ai: r.content, person: j.person, abnormal: j.abnormal, pushed: false });
+    return true;
+  });
+  // matched 一并返回: 前端据此区分"AI判了无人"与"AI输出没读懂", 避免把后者显示成"无人"
+  return { file: cap.file, ai: r.content, provider: providerLabel(selected.name), person: j.person, abnormal: j.abnormal, matched: j.matched, time: new Date().toLocaleString("zh-CN",{hour12:false}) };
 }
 
 // ---- 萤石报警检测 ----
@@ -367,7 +356,7 @@ async function checkDeviceAlarms(serial) {
       // 报警检查只做抓图+记录，AI分析由用户手动触发（点"AI分析"按钮），避免阻塞
       // 时间用萤石报警时间(a.alarmTime)，不是系统时间
       var alarmTime = a.alarmTime ? new Date(a.alarmTime).toLocaleString("zh-CN",{hour12:false}) : new Date().toLocaleString("zh-CN",{hour12:false});
-      recordEvent({ ts: a.alarmTime || Date.now(), time: alarmTime, serial: serial, name: devName(serial), file: f.file, title: "移动侦测", provider: "", ai: "(点击AI分析)", person: false, abnormal: false, pushed: false });
+      await recordEvent({ ts: a.alarmTime || Date.now(), time: alarmTime, serial: serial, name: devName(serial), file: f.file, title: "移动侦测", provider: "", ai: "(点击AI分析)", person: false, abnormal: false, pushed: false });
       results.push({ file: f.file, time: f.time, person: false, abnormal: false, provider: "", ai: "(点击AI分析)" });
     }
     state.seenAlarms = state.seenAlarms.slice(-200);
@@ -436,7 +425,7 @@ async function checkTodayPersonAlarms(serial) {
         if (!ok) { try { const f2 = await doCapture(t.serial, true); fname = f2.file; ok = true; } catch(e2) {} }
         if (!ok) continue;
         var alarmTime = ts ? new Date(ts).toLocaleString("zh-CN",{hour12:false}) : new Date().toLocaleString("zh-CN",{hour12:false});
-        recordEvent({ ts: ts || Date.now(), time: alarmTime, serial: t.serial, name: devName(t.serial), file: fname, title: typeName, provider: "", ai: "(点击AI分析)", person: true, abnormal: false, pushed: false });
+        await recordEvent({ ts: ts || Date.now(), time: alarmTime, serial: t.serial, name: devName(t.serial), file: fname, title: typeName, provider: "", ai: "(点击AI分析)", person: true, abnormal: false, pushed: false });
         existingKeys.add(t.serial + "@" + ts);
         perDevice[t.serial].added++;
         captured++;
@@ -500,28 +489,41 @@ function makeHandler() {
     if (req.method === "POST" && p === "/api/events/delete") {
       let body = "";
       req.on("data", function(chunk){ body += chunk; });
-      req.on("end", function() {
+      req.on("end", async function() {
         try {
           const d = JSON.parse(body);
-          if (d.files && Array.isArray(d.files)) {
-            // 批量删除
-            saveEvents(loadEvents().filter(function(e){ return d.files.indexOf(e.file) < 0; }));
-            sendJson(res, 200, { ok: true, deleted: d.files.length });
-          } else if (d.file) {
-            deleteEventByFile(d.file);
-            sendJson(res, 200, { ok: true });
-          } else {
-            sendJson(res, 400, { error: "缺少 file 或 files 参数" });
+          // 定位一条记录: 有 file 就按 file 比; **没有 file 的**(萤石人形标签消息不带截图、
+          // 兜底抓图又失败时记录里 file 是空串, 看板上显示"无截图")只能按 设备+时间戳 比。
+          // 以前这里直接拿空 file 去 indexOf, 会一次删掉所有无图记录 —— 典型的过度删除。
+          function sameEvent(e, it) {
+            if (it && it.file) return e.file === it.file;
+            if (!it || !it.ts) return false; // 既没有 file 也没有 ts: 不匹配任何记录, 绝不误删
+            return String(e.serial || "") === String(it.serial || "") && Number(e.ts) === Number(it.ts);
           }
+          const items = (Array.isArray(d.items) && d.items.length) ? d.items
+            : (Array.isArray(d.files) ? d.files.map(function (f) { return { file: f }; })
+              : (d.file ? [{ file: d.file }] : null));
+          if (!items) { sendJson(res, 400, { error: "缺少 file / files / items 参数" }); return; }
+          const r = await mutateEvents(function (arr) {
+            let n = 0;
+            for (let i = arr.length - 1; i >= 0; i--) {
+              if (items.some(function (it) { return sameEvent(arr[i], it); })) { arr.splice(i, 1); n++; }
+            }
+            return n > 0;
+          });
+          sendJson(res, r.ok ? 200 : 500, r.ok ? { ok: true, deleted: items.length } : { error: "写入被占用，请重试" });
         } catch (e) { sendJson(res, 500, { error: e.message }); }
       });
       return;
     }
     if (req.method === "POST" && p === "/api/events/delete-all") {
-      saveEvents([]);
-      saveAlarmState({ seenAlarms: [], lastQuery: {} }); // 同步清空，避免删完后查不到
-      _lastEventCount = loadEvents().length;
-      sendJson(res, 200, { ok: true });
+      (async function () {
+        const r = await mutateEvents(function (arr) { arr.length = 0; return true; });
+        if (!r.ok) { sendJson(res, 500, { error: "写入被占用，请重试" }); return; }
+        saveAlarmState({ seenAlarms: [], lastQuery: {} }); // 同步清空，避免删完后查不到
+        _lastEventCount = loadEvents().length;
+        sendJson(res, 200, { ok: true });
+      })();
       return;
     }
     if (req.method === "GET" && p === "/api/events") {
@@ -568,11 +570,15 @@ function makeHandler() {
       return;
     }
     if (req.method === "GET" && p.indexOf("/captures/") === 0) {
-      const name = path.basename(decodeURIComponent(p.slice("/captures/".length)));
+      let rel = decodeURIComponent(p.slice("/captures/".length));
+      // 移动侦测暂存图在 captures/motion/ 子目录(见 webhook.js 的分级留存), 单独放行
+      let dir = path.join(ROOT, "captures");
+      if (rel.indexOf("motion/") === 0) { dir = path.join(ROOT, "captures", "motion"); rel = rel.slice("motion/".length); }
+      const name = path.basename(rel); // basename 兜底防路径穿越
       if (!/^[A-Za-z0-9_\-]+\.(jpg|jpeg)$/i.test(name)) { res.writeHead(400); res.end(""); return; }
-      fs.readFile(path.join(ROOT, "captures", name), function(err, buf) {
+      fs.readFile(path.join(dir, name), function(err, buf) {
         if (err) { res.writeHead(404); res.end(""); return; }
-        res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "max-age=3600" });
+        res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "max-age=600" });
         res.end(buf);
       });
       return;
