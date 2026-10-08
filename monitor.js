@@ -4,7 +4,8 @@
 //   node monitor.js status            查看 accessToken 与账号下所有设备状态
 //   node monitor.js capture [序列号]   抓一张图存入 captures/
 //   node monitor.js once [序列号]      抓图 + AI分析 + 推送（手动测试全链路，绕过有人门控）
-//   node monitor.js watch [秒]         常驻：仅在线设备 + 移动侦测报警 -> 抓图 -> AI判人 -> 有人才推送
+//   node monitor.js watch [秒]         常驻：每台设备 ≥30 分钟定时存档抓图一张(看板垫图素材, 不做AI不推送)
+//                                      —— 报警的 AI 判人 + 推送由 webhook.js 事件驱动链路统一处理
 //   node monitor.js ptz <up|down|left|right> [序列号]   云台转动0.8秒
 const fs = require("fs");
 const path = require("path");
@@ -13,6 +14,7 @@ const { analyzeImage } = require("./lib/ai");
 const { push } = require("./lib/push");
 const { judgePerson } = require("./lib/judge"); // 判人逻辑唯一实现(与 webapp/webhook 共用)
 const store = require("./lib/store"); // events.json 跨进程事务存储(与 webapp/webhook 共用同一把锁)
+const hdcapture = require("./lib/hdcapture"); // 高清抓图: 主码流截帧, 失败回落原抓图接口
 
 const ROOT = __dirname;
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "config.json"), "utf8"));
@@ -28,19 +30,16 @@ function devName(serial) {
   const d = (cfg.devices || []).find(function (x) { return x.serial === serial; });
   return d ? d.name : serial;
 }
-function extractPicUrl(capRes) {
-  if (capRes.code !== "200") throw new Error("抓图失败 code=" + capRes.code + " msg=" + capRes.msg);
-  const d = capRes.data;
-  return Array.isArray(d) ? d[0].picUrl : d.picUrl;
-}
 function ts() { return new Date().toLocaleTimeString(); }
 
 async function grab(serial) {
   console.log("[" + ts() + "] 抓图 " + devName(serial) + " ...");
-  const url = extractPicUrl(await client.capture(serial));
   const file = path.join(ROOT, "captures", serial + "_" + Date.now() + ".jpg");
-  const bytes = await client.downloadTo(url, file);
-  console.log("  已保存 captures/" + path.basename(file) + " (" + (bytes / 1024).toFixed(1) + " KB)");
+  // 高清抓图: 主码流截帧(3200x1800), 失败自动回落原抓图接口(768x432)
+  const meta = await hdcapture.captureHD(client, serial, file);
+  const bytes = fs.statSync(file).size;
+  console.log("  已保存 captures/" + path.basename(file) + " (" + (bytes / 1024).toFixed(1) + " KB)" +
+    (meta.hd ? " 高清" + meta.w + "x" + meta.h : " 普清(回落原接口)"));
   return file;
 }
 
@@ -164,11 +163,26 @@ async function cmdWatch(sec) {
     process.on("exit", function () { try { fs.unlinkSync(path.join(ROOT, "data", "monitor.pid")); } catch (e) {} });
   } catch (e) { console.log("[monitor] pid 文件写入失败: " + e.message); }
   console.log("=== 常驻监控启动 === 轮询间隔 " + interval / 1000 + "s，关注设备: " + targets.map(function (t) { return t.name; }).join(", "));
-  console.log("策略: 仅在线设备 / 仅移动侦测触发抓图+AI / 有人或异常才推送微信。按 Ctrl+C 退出");
-  const bootAt = Date.now(); // 启动锚点: 早于(启动时刻-轮询间隔)的积压报警只登记不分析
+  console.log("策略: 定时抓图存档(看板垫图素材) / AI分析+推送统一由 webhook 事件驱动链路处理，避免重复消耗配额");
+  // 抓图间隔: 默认 **2 小时**/次/设备(2026-10-08 由 30 分钟上调)。
+  //
+  // 为什么是配额问题(不是"刷爆带宽"): 萤石免费版抓图配额只有 100 次/天/设备, 且路径三
+  // `client.capture` 是唯一耗配额的取图方式。配额账(2 台设备):
+  //   巡检 30 分钟/次 = 48 次/天/设备 + 报警补图约 50 次 = 98 次 → 紧贴 100 的上限, 稍有波动就爆。
+  // 实测 2026-10-07~10-08 就是这么打爆的: code=10028 出现 589 次、9048 出现 803 次,
+  // monitor 高清截帧 574 次尝试成功 0 次(抢不到拉流锁 → 回落吃配额接口 → 更拉不到流)。
+  //
+  // 2 小时/次 = 12 次/天/设备, 巡检总占用 24 次, 给报警链路留出 ~76 次/设备的余量。
+  // 巡检图只是**垫图素材**(给人形消息补帧用), 没人来的时候根本不会被引用, 降频代价极小;
+  // 而报警链路的取图是刚需, 不该被巡检挤掉配额。
+  // 可调: config.json 的 watch.captureMinMinutes(不填则默认 120 分钟)。
+  const CAPTURE_MIN_MS = Math.max(
+    interval,
+    Number((cfg.watch || {}).captureMinMinutes || 120) * 60 * 1000
+  );
+  console.log("定时存档间隔: " + Math.round(CAPTURE_MIN_MS / 60000) + " 分钟/设备(萤石抓图配额 100 次/天/设备, 报警链路优先)");
 
-  const state = Object.assign({ seenAlarms: [], lastQuery: {} }, loadState());
-  let fallbackWarned = false;
+  const state = Object.assign({ lastCapture: {}, captureBackoff: {} }, loadState());
 
   async function round() {
     // 每轮动态获取在线状态
@@ -185,48 +199,69 @@ async function cmdWatch(sec) {
         if (onlineSet && !onlineSet.has(t.serial)) {
           continue; // 离线设备静默跳过（不刷屏）
         }
-        const end = Date.now();
-        // 从上次查询时间开始查（首次则回退30分钟）
-  const last = (state.lastQuery || {})[t.serial];
-  const al = await client.alarms(t.serial, last || (end - 30 * 60 * 1000), end, 20);
-        if (al.code !== "200") {
-          if (!fallbackWarned) {
-            console.log("[" + ts() + "] 报警列表不可用(code=" + al.code + ")，降级为定时抓图模式（AI只判人，无人不推送）");
-            fallbackWarned = true;
-          }
-          // 抓图限流：免费版每设备仅100次/天，降级模式下每台设备至少隔10分钟才抓一次
-          state.lastFallback = state.lastFallback || {};
-          if (Date.now() - (state.lastFallback[t.serial] || 0) > 600e3) {
-            state.lastFallback[t.serial] = Date.now();
-            const f0 = await grab(t.serial);
-            await analyzeAndPush(t.serial, f0, "定时巡查");
-          }
-          continue;
-        }
-        state.lastQuery[t.serial] = end; // 查询成功才推进本设备窗口(在循环作用域内,原写在循环外引用t/end必崩)
-        const fresh = (al.data || []).filter(function (a) { return state.seenAlarms.indexOf(a.alarmId) < 0; });
-        fresh.reverse(); // 时间正序逐条处理
-        for (const a of fresh) {
-          state.seenAlarms.push(a.alarmId);
-          // 服务停机期间的积压报警: 只登记去重, 不再补抓图+AI(避免每次开机重放历史浪费配额)
-          if (a.alarmTime < bootAt - interval) {
-            console.log("[" + ts() + "] 跳过积压报警 @" + t.name + " " + new Date(a.alarmTime).toLocaleString() + "（停机期间发生）");
-            continue;
-          }
-          console.log("[" + new Date(a.alarmTime).toLocaleString() + "] 移动侦测 @" + t.name);
-          const f = await grab(t.serial);
-          await analyzeAndPush(t.serial, f, "移动侦测·有人?");
-        }
+        // 配额类失败退避中(10028抓图次数超限/9048取流超限): 未到冷却点静默跳过, 不硬试
+        const bk = (state.captureBackoff || {})[t.serial];
+        if (bk && bk.nextOk && Date.now() < bk.nextOk) continue;
+        // 抓图接口当日配额已耗尽(hdcapture 记的跨进程标记, 见 lib/hdcapture.js CAPTURE_QUOTA_FILE):
+        // 10028 按自然日重置, 当天再怎么试都必然失败 —— 直接整轮跳过, 不再逐设备硬试刷屏。
+        // 注: 高清截帧(主码流)本身不吃抓图配额, 但退避期内 lib/hdcapture 也会一并跳过(宁缺勿烧配额)。
+        if (hdcapture.captureQuotaExhausted() || hdcapture.inStreamBackoff()) continue;
+        // 抓图间隔控制: 距上次存档不足 CAPTURE_MIN_MS 则跳过本轮, 避免高频拉流截帧刷爆带宽
+        const lastCap = (state.lastCapture || {})[t.serial] || 0;
+        if (Date.now() - lastCap < CAPTURE_MIN_MS) continue;
+        // 定时抓图存档：只存图 + 写一条 events.json 垫图记录，不做 AI 分析、不推送。
+        // (AI 判人 + 推送统一由 webhook.js 的事件驱动链路处理，monitor 不再重复)
+        const f = await grab(t.serial);
+        state.lastCapture[t.serial] = Date.now();
+        if (state.captureBackoff && state.captureBackoff[t.serial]) delete state.captureBackoff[t.serial]; // 成功即复位退避
+        await recordEvent({
+          ts: Date.now(),
+          time: new Date().toLocaleString("zh-CN", { hour12: false }),
+          serial: t.serial,
+          name: t.name,
+          file: path.basename(f),
+          title: "定时存档",
+          provider: "",
+          ai: "",
+          person: false,
+          abnormal: false,
+          pushed: false
+        });
       } catch (e) {
-        console.log("[" + ts() + "] 轮询出错(" + t.name + "): " + e.message);
+        const msg = String(e.message || "");
+        console.log("[" + ts() + "] 定时抓图失败(" + t.name + "): " + msg.slice(0, 80));
+        // 配额类失败指数退避(2026-10-07): 萤石免费版抓图/取流超限时每5分钟硬试只白烧调用次数还刷屏
+        // (10-06 24小时连败571次实测)。按连续失败次数翻倍冷却: 5→10→20→40→60分钟封顶, 成功即复位。
+        // 只认确定性标记: code=10028/"次数超限"(抓图配额)与"9048退避中"(本进程取流退避态)。
+        // "可能9048超限/设备离线"是占位流错误里的猜测性套话, 纯20008设备超时不退避, 维持每轮正常重试。
+        if (/10028|次数超限|9048退避中/.test(msg)) {
+          if (!state.captureBackoff) state.captureBackoff = {};
+          const bk2 = state.captureBackoff[t.serial] || (state.captureBackoff[t.serial] = { fails: 0, nextOk: 0 });
+          bk2.fails = (bk2.fails || 0) + 1;
+          const waitMin = Math.min(60, 5 * Math.pow(2, bk2.fails - 1));
+          bk2.nextOk = Date.now() + waitMin * 60 * 1000;
+          console.log("[" + ts() + "] [退避] " + t.name + " 连续第" + bk2.fails + "次配额类失败, 暂停抓图至 " +
+            new Date(bk2.nextOk).toLocaleTimeString("zh-CN", { hour12: false }));
+        }
       }
     }
-    state.seenAlarms = state.seenAlarms.slice(-200);
     saveState(state);
   }
 
-  await round();
-  setInterval(round, interval);
+  let _rounding = false; // 重入保护：上一轮未完成时不触发下一轮
+  async function scheduleNext() {
+    if (_rounding) return; // 跳过本轮（上一轮还在跑）
+    _rounding = true;
+    try {
+      await round();
+    } catch (e) {
+      console.log("[" + ts() + "] 轮询异常: " + e.message);
+    } finally {
+      _rounding = false;
+    }
+    setTimeout(scheduleNext, interval);
+  }
+  scheduleNext();
 }
 
 async function main() {
@@ -254,7 +289,7 @@ async function main() {
     "  node monitor.js status     查看 token、设备与AI渠道状态",
     "  node monitor.js capture [序列号]   抓一张图",
     "  node monitor.js once [序列号]      手动全链路测试（抓图+AI+推送）",
-    "  node monitor.js watch [秒]         常驻监控（在线设备+移动侦测+AI判人+推送）",
+    "  node monitor.js watch [秒]         常驻定时存档抓图（报警AI判人+推送由 webhook.js 处理）",
     "  node monitor.js ptz <up|down|left|right> [序列号]  云台控制"
   ].join("\n"));
 }

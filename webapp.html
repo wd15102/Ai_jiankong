@@ -11,6 +11,43 @@ body{background:var(--bg);color:var(--text);font-family:"Microsoft YaHei",system
 header{padding:16px 24px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-wrap:wrap}
 h1{font-size:20px;color:#fff}
 h1 span{color:var(--accent);font-size:13px;margin-left:8px;font-weight:400}
+/* 统计面板 */
+.stats-bar{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px;padding:12px 24px;max-width:900px;margin:0 auto}
+.stat-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 16px;text-align:center}
+.stat-card .val{font-size:22px;font-weight:600;color:#fff;line-height:1.1}
+.stat-card .val.highlight{color:var(--person)}
+.stat-card .val.safe{color:var(--nobody)}
+.stat-card .val.accent{color:var(--accent)}
+.stat-card .label{color:var(--text2);font-size:12px;margin-top:4px}
+.refresh-toggle{display:inline-flex;align-items:center;gap:6px;background:var(--btn);color:var(--text2);border:1px solid var(--border);border-radius:6px;padding:6px 12px;cursor:pointer;font-size:13px;user-select:none}
+.refresh-toggle.on{background:var(--accent);color:#111;border-color:var(--accent);font-weight:600}
+.refresh-toggle .dot{width:8px;height:8px;border-radius:50%;background:var(--text2)}
+.refresh-toggle.on .dot{background:#111;animation:pulse 1.5s infinite}
+/* 日期选择器(深色主题) */
+.date-input{background:var(--btn);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:5px 10px;font-size:13px;cursor:pointer;color-scheme:dark;font-family:inherit}
+.date-input:hover{border-color:var(--accent)}
+.date-input:focus{outline:none;border-color:var(--accent)}
+.new-alert{position:fixed;top:16px;right:16px;background:var(--person);color:#fff;padding:10px 16px;border-radius:8px;font-size:13px;z-index:100;display:none;cursor:pointer;box-shadow:0 4px 16px rgba(255,107,107,.4);animation:slideIn .3s ease}
+.new-alert.show{display:block}
+@keyframes slideIn{from{transform:translateX(60px);opacity:0}to{transform:none;opacity:1}}
+/* 有人记录页: 时段分布直方图 + 画廊视图 */
+.hour-chart{display:flex;align-items:flex-end;gap:3px;height:72px;padding:12px 16px 4px;background:var(--card);border:1px solid var(--border);border-radius:10px 10px 0 0;border-bottom:none}
+.hour-bar{flex:1;background:rgba(81,207,102,.25);border-radius:3px 3px 0 0;min-height:3px;position:relative;cursor:default;transition:background .2s}
+.hour-bar:hover{background:rgba(81,207,102,.55)}
+.hour-bar.peak{background:var(--nobody)}
+.hour-labels{display:flex;gap:3px;padding:4px 16px 10px;font-size:10px;color:var(--text2);background:var(--card);border:1px solid var(--border);border-top:none;border-radius:0 0 10px 10px;margin-bottom:16px}
+.hour-labels span{flex:1;text-align:center}
+.person-day{margin-bottom:18px}
+.person-day-head{display:flex;align-items:center;gap:10px;padding:8px 4px}
+.person-day-head .date{font-size:15px;font-weight:600;color:#fff}
+.person-day-head .count{color:var(--nobody);font-size:13px}
+.person-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+.person-card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;animation:fadeIn .3s ease}
+.person-card img{width:100%;height:150px;object-fit:cover;cursor:zoom-in;background:#0b0f14;display:block}
+.person-card .p-meta{padding:8px 12px;font-size:12px}
+.person-card .p-time{color:var(--accent);font-family:Consolas,monospace;font-weight:600}
+.person-card .p-dev{color:#7cc4ff;margin-left:8px}
+.person-card .p-ai{color:var(--text2);margin-top:4px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .live{padding:20px 24px;max-width:900px;margin:0 auto}
 .live-card{background:var(--card);border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:24px}
 .live-header{padding:14px 18px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
@@ -40,6 +77,8 @@ select{background:var(--btn);color:var(--text);border:1px solid var(--border);bo
 .badge.prov{background:rgba(154,167,180,.15);color:var(--text2)}
 .badge.skip{background:rgba(43,37,53,.35);color:#c9a7e8}
 .badge.device{background:rgba(245,197,24,.14);color:var(--accent)}
+/* 合并标记: IntelligentTag 一次活动被萤石每~30s重推一条, 后端按同 startTime 归并后标出条数与时长 */
+.badge.merge{background:rgba(116,192,255,.14);color:#74c0ff}
 .history{padding:0 24px 40px;max-width:1200px;margin:0 auto}
 .history-header{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
 .history-header h2{font-size:16px;flex:1}
@@ -58,7 +97,7 @@ select{background:var(--btn);color:var(--text);border:1px solid var(--border);bo
 .card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;position:relative}
 .cards.list-view .card{display:flex;align-items:center;margin-bottom:8px}
 .cards.list-view .card img{width:110px;height:78px}
-.card img{width:100%;height:180px;object-fit:cover;display:block;background:#0b0f14}
+.card img{width:100%;height:180px;object-fit:cover;display:block;background:#0b0f14;cursor:zoom-in}
 /* 无截图占位: 记录本身没有配图(推送时没抓到画面), 或配图已被清理。
    不加这个占位时, <img src="/captures/"> 加载失败后只剩 180px 的 #0b0f14 黑底 —— 看板上的"黑屏卡片" */
 .card .no-pic{width:100%;height:180px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:#0b0f14;color:#5b6b7c;font-size:12px;user-select:none}
@@ -118,24 +157,61 @@ select{background:var(--btn);color:var(--text);border:1px solid var(--border);bo
 .push-group-head .toggle{background:none;border:none;color:var(--text2);font-size:18px;cursor:pointer;padding:0 4px;transition:transform .2s}
 .push-group.collapsed .toggle{transform:rotate(-90deg)}
 .push-group.collapsed .push-rows{display:none}
-.push-rows{padding:6px 0}
+.push-rows{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;padding:12px}
 .push-filters{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin-bottom:16px}
 .push-filters .f-label{color:var(--text2);font-size:12px;margin-right:2px}
 .push-filters .f-sep{width:1px;height:18px;background:var(--border);margin:0 6px}
+/* 已组合条件标签(2026-10-08): 四个筛选可任意组合, 用可点掉的小标签把当前组合显式列出来,
+   免得只靠那行小字看不出"到底筛了什么"(尤其筛了设备时看不出) */
+.push-filters .fchip{display:inline-flex;align-items:center;gap:4px;background:rgba(245,197,24,.14);
+  color:var(--accent);border:1px solid rgba(245,197,24,.32);border-radius:4px;font-size:11px;
+  padding:2px 7px;margin:0 4px 0 0;cursor:pointer;white-space:nowrap}
+.push-filters .fchip:hover{background:rgba(245,197,24,.24)}
+.push-filters .fchip .x{font-size:13px;line-height:1;opacity:.7}
+.push-filters .fchip.static{cursor:default;background:rgba(154,167,180,.12);color:var(--text2);border-color:var(--border)}
+.push-filters .fchip.clear{background:rgba(255,107,107,.12);color:#ff6b6b;border-color:rgba(255,107,107,.3)}
 .push-filters .fb{padding:4px 12px;font-size:12px}
 .push-filters .f-info{color:var(--text2);font-size:12px;margin-left:auto}
-.push-row{display:grid;grid-template-columns:76px 170px 1fr 120px;gap:14px;padding:10px 18px;border-top:1px solid rgba(35,43,54,.5);font-size:13px;align-items:center}
-.push-row:first-child{border-top:none}
-.push-row .t-pic img{display:block;width:76px;height:46px;object-fit:cover;border-radius:6px;border:1px solid var(--border);cursor:zoom-in;background:#0b0f14}
-.push-row .t-pic img:hover{border-color:var(--accent)}
-.push-row .t-pic:empty::after{content:"无图";display:inline-block;width:76px;height:46px;line-height:46px;text-align:center;color:var(--text2);font-size:11px;border:1px dashed var(--border);border-radius:6px}
-.push-row .t-mid{min-width:0}
-.push-row .t-dev{color:#7cc4ff;font-size:13px;display:flex;align-items:center;gap:6px}
-.push-row .t-dev::before{content:"📹";font-size:12px}
-.push-row .t-ai{display:flex;align-items:center;gap:8px;margin-top:4px;min-width:0}
-.push-row .t-ai .badge{flex:none;padding:1px 8px;font-size:11px}
-.push-row .t-ai .ai-text{flex:1;min-width:0;color:var(--text2);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.push-row .t-ai.none .badge{background:rgba(154,167,180,.12);color:var(--text2);font-style:italic}
+.pager-bar{display:flex;align-items:center;justify-content:center;gap:6px;padding:18px 0;flex-wrap:wrap}
+.pager-bar .pg{width:36px;height:36px;padding:0;border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;cursor:pointer;font-size:13px;line-height:36px;text-align:center}
+.pager-bar .pg:hover{border-color:var(--accent);color:var(--accent)}
+.pager-bar .pg.on{background:var(--accent);border-color:var(--accent);color:#111;font-weight:600;cursor:default}
+.pager-bar .pg-ellipsis{color:var(--text2);padding:0 4px;font-size:14px}
+.pager-bar .pg-nav{height:36px;padding:0 14px;border:1px solid var(--border);background:var(--card);color:var(--text);border-radius:8px;cursor:pointer;font-size:13px}
+.pager-bar .pg-nav:hover{border-color:var(--accent);color:var(--accent)}
+.pager-bar .pg-nav[disabled]{opacity:.35;cursor:not-allowed;pointer-events:none}
+.push-card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;animation:fadeIn .3s ease;display:flex;flex-direction:column}
+.push-card .t-pic{background:#0b0f14}
+.push-card .t-pic img{display:block;width:100%;height:150px;object-fit:cover;cursor:zoom-in}
+.push-card .t-pic img:hover{opacity:.88}
+.push-card .t-pic:empty::after{content:"无图";display:flex;align-items:center;justify-content:center;width:100%;height:150px;color:var(--text2);font-size:12px;border-bottom:1px dashed var(--border)}
+.push-card .t-body{padding:10px 12px;display:flex;flex-direction:column;gap:6px;flex:1}
+.push-card .t-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.push-card .t-time{color:var(--accent);font-family:Consolas,monospace;font-size:12px;font-weight:600}
+.push-card .t-dev{color:#7cc4ff;font-size:12px;display:flex;align-items:center;gap:4px}
+.push-card .t-dev::before{content:"📹";font-size:11px}
+.push-card .t-ai{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap}
+.push-card .t-ai .badge{flex:none;padding:1px 8px;font-size:11px}
+.push-card .t-ai .ai-text{flex:1;min-width:0;color:var(--text2);font-size:12px;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
+.push-card .t-ai.none .badge{background:rgba(154,167,180,.12);color:var(--text2);font-style:italic}
+.push-card .t-desc{color:var(--text);font-size:12px;line-height:1.5;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.push-card .t-desc.muted{color:var(--text2);font-style:italic}
+/* ---- 统一监控卡片样式(三页共用: 时间/设备/触发类型 + 有无人/算法/推送状态 + AI结论) ---- */
+.monitor-card{background:var(--card);border:1px solid var(--border);border-radius:10px;overflow:hidden;animation:fadeIn .3s ease;display:flex;flex-direction:column}
+.monitor-card .mc-pic{background:#0b0f14;position:relative}
+.monitor-card .mc-pic img{display:block;width:100%;height:150px;object-fit:cover;cursor:zoom-in}
+.monitor-card .mc-pic img:hover{opacity:.88}
+.monitor-card .mc-pic:empty::after{content:"无图";display:flex;align-items:center;justify-content:center;width:100%;height:150px;color:var(--text2);font-size:12px;border-bottom:1px dashed var(--border)}
+.monitor-card .mc-body{padding:10px 12px;display:flex;flex-direction:column;gap:8px;flex:1}
+.monitor-card .mc-meta{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px}
+.monitor-card .mc-time{color:var(--accent);font-family:Consolas,monospace;font-weight:600}
+.monitor-card .mc-dev{color:#7cc4ff}
+.monitor-card .mc-title{color:var(--text2);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.monitor-card .mc-badges{display:flex;gap:6px;flex-wrap:wrap}
+.monitor-card .mc-badges .badge{font-size:11px;padding:2px 8px;border-radius:4px}
+.monitor-card .mc-ai{color:var(--text2);font-size:12px;line-height:1.6;word-break:break-all}
+.monitor-card .mc-ai .ai-label{color:var(--text);font-weight:600;margin-right:4px}
+.monitor-card .mc-ai .ai-verdict{color:var(--text);font-weight:600}
 /* ---- 推送截图灯箱(当前页放大, 点击遮罩/×/Esc 关闭) ---- */
 .lightbox{display:none;position:fixed;inset:0;z-index:999;background:rgba(5,8,12,.88);flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:28px;cursor:zoom-out}
 .lightbox.open{display:flex}
@@ -145,12 +221,6 @@ select{background:var(--btn);color:var(--text);border:1px solid var(--border);bo
 .lightbox .lb-info .muted-note{color:var(--text2);font-style:italic;font-size:12px}
 .lightbox .lb-close{position:absolute;top:14px;right:20px;background:none;border:1px solid var(--border);color:var(--text2);font-size:20px;width:38px;height:38px;border-radius:50%;cursor:pointer;line-height:1}
 .lightbox .lb-close:hover{color:#fff;border-color:var(--text2)}
-.push-row .t-time{color:var(--text2);font-family:Consolas,monospace;font-size:12px}
-.push-row .t-dev::before{content:"📹";font-size:12px}
-.push-row .t-desc{color:var(--text);font-size:13px}
-.push-row .t-desc.muted{color:var(--text2);font-style:italic;font-size:12px}
-.push-row .t-code{text-align:right;color:var(--text2);font-size:11px;font-family:Consolas,monospace;background:#0b0f14;padding:3px 8px;border-radius:4px;border:1px solid var(--border)}
-@media(max-width:680px){.push-row{grid-template-columns:76px 1fr;gap:8px}.push-row .t-pic{grid-row:span 3}.push-row .t-code{text-align:left;justify-self:start}}
 .card{animation:fadeIn .3s ease}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
 footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(--border);text-align:center}
@@ -161,11 +231,18 @@ footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(-
   <nav class="tabs" id="mainTabs">
     <button class="tab on" data-tab="live">📹 实时看板</button>
     <button class="tab" data-tab="push">📨 萤石推送记录</button>
+    <button class="tab" data-tab="person">👤 有人记录</button>
   </nav>
 </header>
+<div class="stats-bar" id="statsBar">
+  <div class="stat-card"><div class="val" id="statPerson">--</div><div class="label">今日人员活动</div></div>
+  <div class="stat-card"><div class="val" id="statDevice">--</div><div class="label">覆盖设备</div></div>
+  <div class="stat-card"><div class="val" id="statLast">--</div><div class="label">最后活动</div></div>
+  <div class="stat-card"><div class="val accent" id="statAi">--</div><div class="label">AI 分析率</div></div>
+</div>
 <section class="live" id="page-live"><div class="live-card">
   <div class="live-header"><h2>📹 实时画面</h2><div class="controls">
-    <select id="deviceSel"><option value="BK2385850">双溪村-CP1</option><option value="BG6569629">木山村前门-PD1</option></select>
+    <select id="deviceSel"><option value="">加载设备中…</option></select>
     <select id="modelSel"></select>
   </div></div>
   <div class="live-image">
@@ -185,6 +262,7 @@ footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(-
   <div class="history-header"><h2>📋 历史报警记录</h2>
     <div class="filters"><button class="fb on" data-p="all">全部</button><button class="fb" data-p="yes">有人</button><button class="fb" data-p="no">无人</button></div>
     <div class="view-toggle"><button class="vb on" data-v="card">卡片</button><button class="vb" data-v="list">列表</button></div>
+    <button class="refresh-toggle" id="autoRefreshBtn" title="每 30 秒自动刷新，检测到新报警会提示"><span class="dot"></span>自动刷新</button>
     <span class="new-badge" id="newBadge">🔔 <span id="newCount">0</span> 条新报警，点击查看</span>
     <span class="hint">手动刷新</span>
   </div>
@@ -203,7 +281,7 @@ footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(-
     <h2>📨 萤石云推送记录</h2>
     <div class="push-actions">
       <button class="btn" id="btnRefreshPush">🔄 刷新</button>
-      <span class="hint">webhook 收到的萤石云推送消息 · 按消息类型分组 · 日志保留最近 200 条 · 缩略图为该时刻最近的设备抓图（点击看原图）</span>
+      <span class="hint">webhook 收到的萤石云推送消息 · 按消息类型分组 · 每页 100 条分页浏览 · 缩略图为该时刻最近的设备抓图（点击看原图）</span>
     </div>
   </div>
   <div class="push-stats" id="pushStats"></div>
@@ -219,10 +297,54 @@ footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(-
     <button class="fb" data-df="today">今日</button>
     <button class="fb" data-df="yesterday">昨日</button>
     <button class="fb" data-df="before">前天及更早</button>
+    <span class="f-sep"></span>
+    <span class="f-label">类型</span>
+    <button class="fb on" data-tf="all">全部</button>
+    <button class="fb" data-tf="human">人形检测</button>
+    <button class="fb" data-tf="motiondetect">移动侦测</button>
+    <button class="fb" data-tf="pet">宠物侦测</button>
+    <button class="fb" data-tf="vehicle">车辆检测</button>
+    <span class="f-sep"></span>
+    <span class="f-label">设备</span>
+    <button class="fb on" data-devf="all">全部</button>
+    <button class="fb" data-devf="双溪村">双溪村</button>
+    <button class="fb" data-devf="木山村">木山村</button>
+    <!-- 按具体设备筛: 同一村可能有��台设备, 整村筛出来还得自己翻。按钮由 JS 按 /api/devices 动态生成 -->
+    <span id="pushDevSpecific"></span>
+    <span class="f-sep"></span>
+    <span id="pushActiveFilter" class="f-info"></span>
     <span class="f-info" id="pushFilterInfo"></span>
   </div>
   <div id="pushGroups"><div class="empty">加载中...</div></div>
 </section>
+<section class="push-page" id="page-person" style="display:none">
+  <div class="push-header">
+    <h2>👤 有人记录</h2>
+    <div class="push-actions">
+      <button class="btn" id="btnRefreshPerson">🔄 刷新</button>
+      <span class="hint">人员活动模式分析 · 时段分布 · 按日期分组 · 高清原图懒加载</span>
+    </div>
+  </div>
+  <div class="push-stats" id="personStats"></div>
+  <div class="hour-chart" id="hourChart"></div>
+  <div class="hour-labels" id="hourLabels"></div>
+  <div class="push-filters" id="personVillageFilters">
+    <span class="f-label">村子</span>
+    <button class="fb on" data-vf="all">全部村</button>
+    <button class="fb" data-vf="双溪村">🏡 双溪村</button>
+    <button class="fb" data-vf="木山村">🚪 木山村</button>
+  </div>
+  <div class="push-filters" id="personFilters">
+    <span class="f-label">时间</span>
+    <button class="fb on" data-pf="all">全部</button>
+    <button class="fb" data-pf="today">今日</button>
+    <button class="fb" data-pf="yesterday">昨日</button>
+    <input type="date" id="personDatePick" class="date-input" title="选择任意日期查看当天记录">
+    <span class="f-info" id="personFilterInfo"></span>
+  </div>
+  <div id="personGroups"><div class="empty">加载中...</div></div>
+</section>
+<div class="new-alert" id="newAlert" onclick="this.classList.remove('show')">🔔 检测到新报警！点击查看</div>
 <div class="lightbox" id="pushLightbox" onclick="if(event.target===this)closePushPic()">
   <button class="lb-close" onclick="closePushPic()" title="关闭 (Esc)">×</button>
   <img id="lbImg" alt="推送截图放大查看">
@@ -271,12 +393,39 @@ function setBusy(msg, spin){ $("liveOverlay").style.display = "flex"; $("spinner
 function hideOverlay(){ $("liveOverlay").style.display = "none"; }
 
 // ---- 标签页切换 + 萤石推送记录 ----
+// 按具体设备筛选的按钮(2026-10-08): 村筛选只有双溪村/木山村两档, 同村多台设备时无法单独查其中一台。
+// 按钮从 /api/devices 动态生成, 形如「CP1云台机」「木山村前门PD1」, 直接传 serial 给后端。
+// 只列当前有推送记录的设备 —— 按 serial 在 push_log 里出现过才生成, 避免出现点下去 0 条的死按钮。
+var _pushDevButtonsReady = false;
+async function buildDeviceSpecificButtons(){
+  var box = $("pushDevSpecific");
+  if (!box || _pushDevButtonsReady) return;
+  var devs = [];
+  try { devs = (await (await fetch("/api/devices")).json()).devices || []; } catch(e){ return; }
+  if (!devs.length) return;
+  // 找出 push_log 里真实出现过的 serial, 避免给"从未推送过"的设备生成点了就是 0 条的按钮
+  var seen = {};
+  var d = (await (await fetch("/api/push-log?limit=1000&offset=0&type=all&device=all&person=all&day=all")).json());
+  (d.groups || []).forEach(function(g){ (g.items||[]).forEach(function(it){ seen[it.serial] = true; }); });
+  var html = "";
+  devs.forEach(function(dev){
+    if (!seen[dev.serial]) return; // 从没推过 → 不生成按钮
+    // 去掉村名前缀, 只留可辨识部分: "双溪村-CP1云台机" → "CP1云台机"
+    var short = String(dev.name || dev.serial).replace(/^.*村-/, "").replace(/\s*\(.*\)$/, "");
+    html += '<button class="fb" data-devf="' + esc(dev.serial) + '" title="' + esc(dev.serial + " · " + (dev.name||"")) + '">' + esc(short) + '</button>';
+  });
+  if (!html) return;
+  box.innerHTML = '<span class="f-label">具体</span>' + html;
+  _pushDevButtonsReady = true;
+}
 function switchTab(name){
   $("page-live").style.display = name === "live" ? "block" : "none";
   $("page-history").style.display = name === "live" ? "block" : "none";
   $("page-push").style.display = name === "push" ? "block" : "none";
+  $("page-person").style.display = name === "person" ? "block" : "none";
   Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(b){ b.classList.toggle("on", b.getAttribute("data-tab") === name); });
-  if (name === "push") loadPushLog();
+  if (name === "push") { buildDeviceSpecificButtons(); loadPushLog(1); }
+  if (name === "person") loadPersonRecords();
 }
 
 // 萤石推送记录的每条记录需要一个"含义说明"，避免出现"无内容描述"
@@ -297,6 +446,8 @@ const PUSH_TIPS = {
   "PetDetection": "宠物侦测：检测到猫/狗等宠物",
   "intelligentDetection": "萤石智能侦测",
   "SmartHumanDet": "萤石智能人形检测",
+  "IntelligentTag": "萤石多标签上报：人/宠物标签混在一起，看板已按 payload 真实标签分流到人形或宠物分组",
+  "PeopleDetectionEvent": "萤石人体检测事件（无截图，人形检测有效）",
   "storage_status": "存储卡/云存储状态变化",
   "AI": "萤石 AI 算法推送",
   "agent": "萤石 AI 智能体推送"
@@ -309,6 +460,8 @@ function pushDesc(type, text){
 
 // ---- 推送截图灯箱: 点击缩略图在当前页放大, 点击遮罩/×/Esc 关闭 ----
 var PUSH_ITEMS = []; // 与行渲染顺序一致, 供灯箱取回该项的时间/设备/AI结论
+var HISTORY_ITEMS = []; // 实时看板/历史记录页共用(renderCards 写入)
+var PERSON_ITEMS = [];  // 有人记录页(renderPersonRecords 写入)
 // 这条记录到底有没有真跑过 AI。"(点击AI分析)"/"(等待分析...)"只是占位文案 ——
 // 萤石设备端"人形检测"(报警码 15504 / IntelligentTag 的 human 标签)直通进来的记录就是这种:
 // webhook.js 里 person 被无条件置 true, 从头到尾没调用过任何模型。
@@ -331,82 +484,247 @@ function openPushPic(i){
   $("lbImg").src = it.pic;
   $("lbInfo").innerHTML =
     '<div class="lb-head">' + aiBadgeHtml(it.person, it.ai) + '<span>' + esc(it.time) + ' · ' + esc(it.devName) + '</span></div>' +
-    (it.ai ? '<div>' + esc(it.ai) + '</div>'
+    (hasAiVerdict(it.ai) ? '<div>' + esc(it.ai) + '</div>'
            : '<div class="muted-note">该图片没有匹配到 AI 判读记录（普通移动侦测消息默认不做 AI 分析）</div>');
   $("pushLightbox").classList.add("open");
 }
 function closePushPic(){ $("pushLightbox").classList.remove("open"); }
+
+// ---- 统一监控卡片渲染(三页共用) ----
+// 展示: 时间/设备/触发类型 + 有无人/算法/推送状态 + AI大模型检测结论
+// context: "history" | "person" | "push" — 决定 pushSingle 从哪个数组取数据
+function renderMonitorCard(e, idx, picUrl, onPicClick, context){
+  var time = e.time || "";
+  var devName = e.name || e.devName || e.serial || "";
+  var title = e.title || "";
+  var person = e.person;
+  var provider = e.provider || "";
+  var ai = e.ai || "";
+  var pushed = e.pushed;
+  var veh = e.veh;
+  // 解析 AI 结论: 可能包含多模型对比(如 "agnes:无人 / mota:无人") + 判定依据
+  var aiHtml = "";
+  if (ai && ai !== "(点击AI分析)" && ai !== "(等待分析...)"){
+    var aiLines = String(ai).split(/\r?\n/).map(function(s){ return s.trim(); }).filter(Boolean);
+    var verdictLines = [];
+    var basisText = "";
+    for (var i = 0; i < aiLines.length; i++){
+      var line = aiLines[i];
+      if (line.indexOf("依据") >= 0 || line.indexOf("理由") >= 0){
+        basisText = line.replace(/^依据[:：]?\s*/,"").replace(/^理由[:：]?\s*/,"");
+      } else if (line){
+        verdictLines.push(line);
+      }
+    }
+    if (verdictLines.length || basisText){
+      aiHtml = '<div class="mc-ai"><span class="ai-label">AI结论:</span>';
+      if (verdictLines.length) aiHtml += '<span class="ai-verdict">' + esc(verdictLines.join(" / ")) + '</span>';
+      if (basisText) aiHtml += '<div style="margin-top:2px;color:var(--text2)">依据: ' + esc(basisText) + '</div>';
+      aiHtml += '</div>';
+    }
+  }
+  // 标签行: 有无人 + 算法/模型 + 推送状态 + 驾车/骑车
+  var badges = aiBadgeHtml(person, ai);
+  if (veh) badges += '<span class="badge" style="background:rgba(255,166,87,.18);color:#ffa657">🚗 驾车/骑车</span>';
+  if (provider) badges += '<span class="badge prov">' + esc(provider) + '</span>';
+  if (pushed) badges += '<span class="badge" style="background:rgba(81,207,102,.15);color:#51cf66">已推送</span>';
+  else badges += '<button class="badge push-btn" data-idx="' + idx + '" data-context="' + (context || "history") + '" style="background:rgba(245,197,24,.15);color:var(--accent);border:1px solid rgba(245,197,24,.3);cursor:pointer;font-size:11px;padding:1px 8px;border-radius:4px" onclick="pushSingle(' + idx + ')">未推送</button>';
+  // extraBadge 由调用方直接给 HTML(推送记录页的"合并 N 条 · 持续 N 秒"用) —— title 会被 esc 转义, 塞不进标签行
+  if (e.extraBadge) badges += e.extraBadge;
+  // 图片
+  var pic = picUrl
+    ? '<img src="' + esc(picUrl) + '" loading="lazy" alt="监控截图" onclick="' + onPicClick + '(' + idx + ');event.stopPropagation()" onerror="this.remove()">'
+    : '<div style="width:100%;height:150px;display:flex;align-items:center;justify-content:center;color:var(--text2);font-size:12px">无截图</div>';
+  return '<div class="monitor-card">' +
+    '<div class="mc-pic">' + pic + '</div>' +
+    '<div class="mc-body">' +
+      '<div class="mc-meta">' +
+        '<span class="mc-time">' + esc(time) + '</span>' +
+        '<span class="mc-dev">' + esc(devName) + '</span>' +
+        (title ? '<span class="mc-title">' + esc(title) + '</span>' : '') +
+      '</div>' +
+      '<div class="mc-badges">' + badges + '</div>' +
+      aiHtml +
+    '</div>' +
+  '</div>';
+}
+
+// ---- 单用户推送: 只推给自己的微信(config.push.selfOpenid), 不推其他人 ----
+async function pushSingle(i){
+  var btn = document.querySelector('.push-btn[data-idx="' + i + '"]');
+  var context = btn ? (btn.getAttribute("data-context") || "history") : "history";
+  var items = context === "person" ? PERSON_ITEMS : (context === "push" ? PUSH_ITEMS : HISTORY_ITEMS);
+  var e = items[i]; if (!e) return;
+  if (btn){ btn.textContent = "推送中..."; btn.disabled = true; btn.style.opacity = "0.6"; }
+  try {
+    var d = await (await fetch("/api/push-single", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: e.file || "", serial: e.serial || "", ai: e.ai || "", person: e.person, name: e.name || e.devName || "", time: e.time || "", title: e.title || "", alarmType: e.alarmType || "" })
+    })).json();
+    if (d.ok){
+      if (btn){ btn.textContent = "已推送"; btn.style.background = "rgba(81,207,102,.15)"; btn.style.color = "#51cf66"; btn.style.borderColor = "rgba(81,207,102,.3)"; btn.disabled = true; btn.onclick = null; }
+      e.pushed = true; // 更新内存状态, 避免刷新后才能看到
+    } else {
+      if (btn){ btn.textContent = "未推送"; btn.disabled = false; btn.style.opacity = "1"; }
+      alert("推送失败: " + (d.error || "未知错误"));
+    }
+  } catch(err){
+    if (btn){ btn.textContent = "未推送"; btn.disabled = false; btn.style.opacity = "1"; }
+    alert("推送失败: " + err.message);
+  }
+}
 document.addEventListener("keydown", function(e){ if (e.key === "Escape") closePushPic(); });
 
-// ---- 推送记录筛选: 是否有人 × 按天(今日/昨日/更早) 组合查询, 本地重渲染不重新请求 ----
-var PUSH_DATA = null; // 最近一次接口返回
-var PUSH_FILTER = { person: "all", day: "all" };
-function itemDayKey(s){
-  var m = String(s || "").match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
-  return m ? m[1] + "-" + ("0" + m[2]).slice(-2) + "-" + ("0" + m[3]).slice(-2) : "";
+// ---- 历史报警记录图片灯箱: 点击图片放大, 复用 #pushLightbox, 点击遮罩/×/Esc 关闭 ----
+// HISTORY_ITEMS/PERSON_ITEMS/PUSH_ITEMS 已在文件顶部统一声明, 此处不再重复
+function openHistoryPic(i){
+  var e = HISTORY_ITEMS[i]; if (!e || !e.file) return;
+  $("lbImg").src = "/captures/" + encodeURIComponent(e.file);
+  $("lbInfo").innerHTML =
+    '<div class="lb-head">' + aiBadgeHtml(e.person, e.ai) + '<span>' + esc(e.time) + ' · ' + esc(e.name) + '</span></div>' +
+    (hasAiVerdict(e.ai) ? '<div>' + esc(e.ai) + '</div>'
+                        : '<div class="muted-note">该记录没有 AI 判读结论（可在看板点「AI分析」补充）</div>');
+  $("pushLightbox").classList.add("open");
 }
-function dayKeyOffset(offset){
-  var d = new Date(); d.setDate(d.getDate() - offset);
-  return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
-}
-function matchPushFilter(it){
-  var f = PUSH_FILTER;
-  if (f.person === "yes" && it.person !== true) return false;
-  if (f.person === "no" && it.person !== false) return false;
-  if (f.person === "none" && (it.person === true || it.person === false)) return false;
-  if (f.day !== "all"){
-    var k = itemDayKey(it.time);
-    if (f.day === "today" && k !== dayKeyOffset(0)) return false;
-    if (f.day === "yesterday" && k !== dayKeyOffset(1)) return false;
-    if (f.day === "before" && !(k && k < dayKeyOffset(1))) return false;
+
+// ---- 推送记录筛选: 类型/设备/是否有人/时间 四个筛选全部在服务端完成(总数与分页恒一致) ----
+var PUSH_FILTER = { person: "all", day: "all", type: "all", dev: "all" };
+var PUSH_PAGE = { page: 1, limit: 100, totalPages: 1, loading: false };
+var PUSH_GROUPS = []; // 当前页的分组
+var PUSH_TOTAL = 0;   // 后端筛选后总数(分页依据)
+var PUSH_GRAND = 0;   // 后端"类型+设备"筛选后的池子(页面"全量 X 条"展示用)
+
+function pagerHtml(){
+  var page = PUSH_PAGE.page, total = PUSH_PAGE.totalPages;
+  if (total <= 1) return "";
+  var out = '<div class="pager-bar">';
+  out += '<button class="pg-nav" ' + (page<=1?'disabled':'onclick="loadPushLog(' + (page-1) + ')"') + '>‹ 上一页</button>';
+  var start = Math.max(1, page-2), end = Math.min(total, page+2);
+  var pages = [];
+  if (start > 1) pages.push(1);
+  if (start > 2) pages.push("...");
+  for (var i=start;i<=end;i++) pages.push(i);
+  if (end < total-1) pages.push("...");
+  if (end < total) pages.push(total);
+  for (var j=0;j<pages.length;j++){
+    var pg = pages[j];
+    if (pg === "..."){ out += '<span class="pg-ellipsis">…</span>'; continue; }
+    out += '<button class="pg' + (pg===page?' on':'') + '" onclick="loadPushLog(' + pg + ')">' + pg + '</button>';
   }
-  return true;
+  out += '<button class="pg-nav" ' + (page>=total?'disabled':'onclick="loadPushLog(' + (page+1) + ')"') + '>下一页 ›</button>';
+  out += '</div>';
+  return out;
 }
-async function loadPushLog(){
-  $("pushGroups").innerHTML = '<div class="empty">加载中...</div>';
+async function loadPushLog(page){
+  if (PUSH_PAGE.loading) return;
+  var p = parseInt(page, 10) || PUSH_PAGE.page; if (p < 1) p = 1;
+  PUSH_PAGE.loading = true;
+  var box = $("pushGroups");
+  box.innerHTML = '<div class="empty">加载中...</div>';
   $("pushStats").innerHTML = "";
   try {
-    PUSH_DATA = await (await fetch("/api/push-log?limit=300")).json();
+    var offset = (p - 1) * PUSH_PAGE.limit;
+    var d = await (await fetch("/api/push-log?limit=" + PUSH_PAGE.limit + "&offset=" + offset
+      + "&type=" + encodeURIComponent(PUSH_FILTER.type)
+      + "&device=" + encodeURIComponent(PUSH_FILTER.dev)
+      + "&person=" + encodeURIComponent(PUSH_FILTER.person)
+      + "&day=" + encodeURIComponent(PUSH_FILTER.day))).json();
+    // rawCount 必须带过来: 页头「已合并重复」统计块按本页每个条目的 merged 累加,
+    // 而分组头的 "N / M 条" 用它当分母 —— 丢了会让归并效果看不出来
+    PUSH_GROUPS = (d.groups || []).map(function(g){ return { type: g.type, name: g.name, count: g.count, rawCount: g.rawCount, items: g.items.slice() }; });
+    PUSH_TOTAL = d.total || 0;
+    PUSH_GRAND = (d.grand != null) ? d.grand : (d.total || 0);
+    PUSH_PAGE.page = p;
+    PUSH_PAGE.totalPages = Math.max(1, Math.ceil(PUSH_TOTAL / PUSH_PAGE.limit));
     renderPushGroups();
-  } catch(e){ $("pushGroups").innerHTML = '<div class="empty">加载失败: ' + esc(e.message) + '</div>'; }
+    window.scrollTo(0, 0);
+  } catch(e){ box.innerHTML = '<div class="empty">加载失败: ' + esc(e.message) + '</div>'; }
+  finally { PUSH_PAGE.loading = false; }
 }
 function renderPushGroups(){
   var box = $("pushGroups"), stats = $("pushStats"), info = $("pushFilterInfo");
-  var d = PUSH_DATA;
-  if (!d || !d.groups || !d.groups.length){
+  // 注意: 下面第 ~621 行也有一句 var anyFilter = ...(重新计算, 因为 var 提升会覆盖)。
+  // 这里显式独立算一份给空态提示用, 避免依赖声明顺序。
+  var anyFilterNow = (PUSH_FILTER.person !== "all" || PUSH_FILTER.day !== "all"
+                      || PUSH_FILTER.dev !== "all" || PUSH_FILTER.type !== "all");
+  // 空态也要显示"已组合"标签, 否则筛出 0 条时用户不知道到底筛了什么(条件却还在 PUSH_FILTER 里)
+  var emptyChips = [];
+  if (PUSH_FILTER.day !== "all") emptyChips.push("时间:" + ({today:"今日",yesterday:"昨日",before:"前天及更早"})[PUSH_FILTER.day]);
+  if (PUSH_FILTER.type !== "all") emptyChips.push(({human:"人形检测",motiondetect:"移动侦测",pet:"宠物侦测",vehicle:"车辆检测"})[PUSH_FILTER.type] || PUSH_FILTER.type);
+  if (PUSH_FILTER.dev !== "all") {
+    var eDevBtn = document.querySelector('[data-devf="' + PUSH_FILTER.dev + '"]');
+    emptyChips.push("设备:" + (eDevBtn ? eDevBtn.textContent : PUSH_FILTER.dev));
+  }
+  if (PUSH_FILTER.person !== "all") emptyChips.push(({yes:"有人",no:"无人",none:"无AI结论"})[PUSH_FILTER.person]);
+  var eActive = $("pushActiveFilter");
+  if (eActive) eActive.innerHTML = emptyChips.length
+    ? ('<span class="f-label">已组合</span>' + emptyChips.map(function(t){ return '<span class="fchip static">' + esc(t) + '</span>'; }).join("")
+       + '<button class="fchip clear" data-clearf="all">清空全部</button>')
+    : "";
+  if (!PUSH_GROUPS.length){
     stats.innerHTML = ""; info.textContent = "";
-    box.innerHTML = '<div class="empty">暂无萤石推送记录（webhook 还没收到过萤石推送）</div>'; return;
+    box.innerHTML = anyFilterNow
+      ? '<div class="empty">没有符合当前筛选条件的推送记录</div>'
+      : '<div class="empty">暂无萤石推送记录（webhook 还没收到过萤石推送）</div>';
+    return;
   }
 
-  // 按当前筛选条件计算每组可见行
-  var filtered = [], totalShown = 0;
-  for (var i = 0; i < d.groups.length; i++){
-    var items = d.groups[i].items.filter(matchPushFilter);
-    filtered.push({ g: d.groups[i], items: items });
-    totalShown += items.length;
+  // 四个筛选(类型/设备/是否有人/时间)已全部在服务端完成, 这里直接渲染当前页, 不再本地二次筛选
+  var groups = PUSH_GROUPS;
+  var filtered = [];
+  for (var i = 0; i < groups.length; i++){
+    filtered.push({ g: groups[i], items: groups[i].items });
   }
-  var filteredOn = PUSH_FILTER.person !== "all" || PUSH_FILTER.day !== "all";
-  info.textContent = filteredOn ? ("筛选结果 " + totalShown + " / " + (d.total || 0) + " 条") : "";
+  var anyFilter = PUSH_FILTER.person !== "all" || PUSH_FILTER.day !== "all" || PUSH_FILTER.dev !== "all" || PUSH_FILTER.type !== "all";
+  var allLogs = PUSH_GRAND || PUSH_TOTAL;
+  var PUSH_TYPE_LABEL = { human: "人形检测", motiondetect: "移动侦测", pet: "宠物侦测", vehicle: "车辆检测" };
+  var typeLabel = PUSH_TYPE_LABEL[PUSH_FILTER.type] || "";
+  var typeTag = (PUSH_FILTER.type !== "all" ? (" · " + typeLabel) : "") + (PUSH_FILTER.dev !== "all" ? (" · " + PUSH_FILTER.dev) : "") + (PUSH_FILTER.day !== "all" ? (" · " + (PUSH_FILTER.day === "today" ? "今日" : (PUSH_FILTER.day === "yesterday" ? "昨日" : "前天及更早"))) : "") + (PUSH_FILTER.person !== "all" ? (" · " + (PUSH_FILTER.person === "yes" ? "有人" : (PUSH_FILTER.person === "no" ? "无人" : "无AI结论"))) : "");
+  info.textContent = anyFilter
+    ? ("筛选出 " + PUSH_TOTAL + " / 全量 " + allLogs + " 条 · 第 " + PUSH_PAGE.page + " / " + PUSH_PAGE.totalPages + " 页" + typeTag)
+    : ("共 " + PUSH_TOTAL + " 条 · 第 " + PUSH_PAGE.page + " / " + PUSH_PAGE.totalPages + " 页" + typeTag);
 
-  // 统计(全量口径; 筛选激活时第一块改显示筛选结果)
-  var totalCount = 0, deviceSet = {}, typeCount = d.groups.length;
-  for (var i = 0; i < d.groups.length; i++){
-    totalCount += d.groups[i].count;
-    for (var j = 0; j < d.groups[i].items.length; j++){
-      var dev = d.groups[i].items[j].devName || d.groups[i].items[j].serial;
+  // 当前组合条件一览(2026-10-08): 四个筛选可任意组合, 光靠下面那行小字看不出"到底筛了什么"
+  // (尤其筛了设备时看不出), 所以把每个非"全部"的条件做成可单独点掉的小标签。
+  var activeBox = $("pushActiveFilter");
+  if (activeBox) {
+    var DAY_LABEL = { today: "今日", yesterday: "昨日", before: "前天及更早" };
+    var PER_LABEL = { yes: "有人", no: "无人", none: "无AI结论" };
+    // 设备可能是村名也可能是 serial —— serial 时显示设备名(去掉村前缀)更好认
+    var devLabel = "";
+    if (PUSH_FILTER.dev !== "all") {
+      var devBtn = document.querySelector('[data-devf="' + PUSH_FILTER.dev + '"]');
+      devLabel = devBtn ? devBtn.textContent : PUSH_FILTER.dev;
+    }
+    var chips = [];
+    if (PUSH_FILTER.day !== "all")   chips.push({ k: "day",     t: "时间:" + DAY_LABEL[PUSH_FILTER.day] });
+    if (PUSH_FILTER.type !== "all")  chips.push({ k: "type",    t: typeLabel });
+    if (PUSH_FILTER.dev !== "all")   chips.push({ k: "device",  t: "设备:" + devLabel });
+    if (PUSH_FILTER.person !== "all")chips.push({ k: "person",  t: PER_LABEL[PUSH_FILTER.person] });
+    activeBox.innerHTML = chips.length
+      ? ('<span class="f-label">已组合</span>' + chips.map(function(c){
+          return '<button class="fchip" data-clearf="' + c.k + '" title="点击去掉该条件">'
+               + esc(c.t) + '<span class="x">×</span></button>';
+        }).join("") + '<button class="fchip clear" data-clearf="all">清空全部</button>')
+      : "";
+  }
+
+  // 统计(基于筛选后的当前页数据)
+  var deviceCount, deviceSet = {};
+  for (var i = 0; i < groups.length; i++){
+    for (var j = 0; j < groups[i].items.length; j++){
+      var dev = groups[i].items[j].devName || groups[i].items[j].serial;
       if (dev) deviceSet[dev] = 1;
     }
   }
-  var deviceCount = Object.keys(deviceSet).length;
-  var allLogs = d.total || totalCount;
+  deviceCount = Object.keys(deviceSet).length;
   var firstTime = "—", lastTime = "—";
-  // 第一个分组的最后一条 = 最新一条；最后一个分组的 items 反向时间排，可能不是
-  if (d.groups.length && d.groups[0].items.length){
-    lastTime = d.groups[0].items[0].time || "—";
-    // 找最早一条
+  if (groups.length && groups[0].items.length){
+    lastTime = groups[0].items[0].time || "—";
     var minTime = null;
-    for (var g = 0; g < d.groups.length; g++){
-      var its = d.groups[g].items;
+    for (var g = 0; g < groups.length; g++){
+      var its = groups[g].items;
       for (var k = 0; k < its.length; k++){
         var t = its[k].time;
         if (t && (!minTime || t < minTime)) minTime = t;
@@ -414,15 +732,23 @@ function renderPushGroups(){
     }
     firstTime = minTime || "—";
   }
+  var mergedTotal = 0, rawTotal = 0;
+  for (var mi = 0; mi < groups.length; mi++){
+    rawTotal += (groups[mi].rawCount || groups[mi].count || 0);
+    for (var mj = 0; mj < groups[mi].items.length; mj++) mergedTotal += (groups[mi].items[mj].merged || 1) - 1;
+  }
   stats.innerHTML =
-    '<div class="stat-tile"><div class="label">推送总数</div><div class="val accent">' + (filteredOn ? totalShown : allLogs) + '</div><div class="sub">' + (filteredOn ? ("筛选自 " + allLogs + " 条") : ("近 " + Math.min(300, allLogs) + " 条已加载")) + '</div></div>' +
-    '<div class="stat-tile"><div class="label">消息类型</div><div class="val">' + typeCount + '</div><div class="sub">见下方分组</div></div>' +
-    '<div class="stat-tile"><div class="label">涉及设备</div><div class="val">' + deviceCount + '</div><div class="sub">台</div></div>' +
-    '<div class="stat-tile"><div class="label">最早 / 最新</div><div class="val" style="font-size:14px">' + esc(firstTime.slice(0,16)) + '</div><div class="sub">' + esc(lastTime.slice(0,16)) + '</div></div>';
+    '<div class="stat-tile"><div class="label">推送总数</div><div class="val accent">' + (anyFilter ? PUSH_TOTAL : allLogs) + '</div><div class="sub">' + (anyFilter ? ("筛选自 " + allLogs + " 条") : ("第 " + PUSH_PAGE.page + " / " + PUSH_PAGE.totalPages + " 页")) + '</div></div>' +
+    '<div class="stat-tile"><div class="label">消息类型</div><div class="val">' + (typeLabel || groups.length) + '</div><div class="sub">' + (typeLabel ? "筛选" : "见下方分组") + '</div></div>' +
+    '<div class="stat-tile"><div class="label">涉及设备</div><div class="val">' + deviceCount + '</div><div class="sub">本页</div></div>' +
+    '<div class="stat-tile"><div class="label">最早 / 最新</div><div class="val" style="font-size:14px">' + esc(firstTime.slice(0,16)) + '</div><div class="sub">' + esc(lastTime.slice(0,16)) + '</div></div>' +
+    (mergedTotal > 0
+      ? '<div class="stat-tile"><div class="label">已合并重复</div><div class="val">' + mergedTotal + '</div><div class="sub">同一次活动的重复上报</div></div>'
+      : '');
 
   // 分组渲染(只渲染有可见行的分组; 筛选后全空给出提示)
   var shownGroups = filtered.filter(function(x){ return x.items.length; });
-  if (!shownGroups.length){ box.innerHTML = '<div class="empty">没有符合筛选条件的推送记录</div>'; return; }
+  if (!shownGroups.length){ box.innerHTML = '<div class="empty">本页没有符合筛选条件的推送记录</div>' + pagerHtml(); return; }
   var out = "";
   PUSH_ITEMS = []; // 每次重渲染重建, 行内 onclick 引用下标
   for (var i = 0; i < shownGroups.length; i++){
@@ -436,41 +762,300 @@ function renderPushGroups(){
       '<div class="push-rows">';
     for (var j = 0; j < items.length; j++){
       var it = items[j];
-      var desc = pushDesc(g.type, it.text);
-      // 缩略图: 后端已匹配同设备±2分钟内的 captures 抓图; 加载失败时移除img, 用 :empty 占位
       var idx = PUSH_ITEMS.length;
       PUSH_ITEMS.push(it);
-      var picCell = it.pic
-        ? '<img src="' + esc(it.pic) + '" loading="lazy" alt="推送截图" onclick="openPushPic(' + idx + ')" onerror="this.remove()">'
-        : '';
-      // AI结论: 后端按"同一张抓图/同设备90秒同活动"从 events.json 匹配
-      var aiCell = (it.person === true || it.person === false)
-        ? '<div class="t-ai">' + aiBadgeHtml(it.person, it.ai) + (hasAiVerdict(it.ai) ? '<span class="ai-text">' + esc(it.ai) + '</span>' : '') + '</div>'
-        : '<div class="t-ai none">' + aiBadgeHtml(null) + '</div>';
-      out += '<div class="push-row">' +
-        '<div class="t-pic">' + picCell + '</div>' +
-        '<div class="t-time">' + esc(it.time) + '</div>' +
-        '<div class="t-mid"><div class="t-dev">' + esc(it.devName) + '</div>' + aiCell + '</div>' +
-        '<div class="t-desc' + (desc.muted ? ' muted' : '') + '">' + desc.html + '</div>' +
-      '</div>';
+      // IntelligentTag 是"活动片段型上报": 萤石对一次持续活动每 ~30s 重推一条
+      // (startTime 相同、endTime 延伸), 后端已按同 startTime 归并成一条, 这里标出合并了多少条、
+      // 活动持续了多久, 避免看着像"重复数据"。
+      var mergeTag = "";
+      if (it.merged > 1){
+        mergeTag = '<span class="badge merge">合并 ' + it.merged + ' 条'
+                 + (it.durSec ? (' · 持续 ' + (it.durSec >= 60 ? Math.round(it.durSec / 60) + " 分钟" : it.durSec + " 秒")) : "")
+                 + '</span>';
+      }
+      // 构造统一渲染需要的事件对象(推送记录页用真实 pushed/file 对齐 events.json)
+      var fakeEvent = {
+        time: it.time || "",
+        name: it.devName || "",
+        title: g.name || "",
+        extraBadge: mergeTag,
+        person: it.person,
+        provider: it.provider || "",
+        ai: it.ai || "",
+        pushed: it.pushed === true,
+        file: it.file || "",
+        serial: it.serial || "",
+        veh: it.veh || 0
+      };
+      out += renderMonitorCard(fakeEvent, idx, it.pic || "", "openPushPic", "push");
     }
     out += '</div></div>';
   }
+  out += pagerHtml();
   box.innerHTML = out;
 }
-// 筛选按钮事件(事件委托): data-pf=是否有人, data-df=按天
+// 筛选按钮事件(事件委托): data-pf=是否有人, data-df=按天, data-tf=类型, data-devf=设备(村)
+// ⚠️ **四个筛选全部在服务端做**(2026-10-07 起 buildPushGroups 里应用), 所以任何一项变化都必须
+// 重新请求后端拿第 1 页。
+// 事故(2026-10-08 东哥实测): 「是否有人」「时间」原本只调 renderPushGroups() 本地重渲染,
+// 而本地只有当前页那 100 条(都是当天的), 于是点「昨日」后重渲染出来的还是今天的数据 ——
+// 表现为"过滤没生效"。server 端 day=yesterday 实测返回 25 条且首条是 10/7, 后端一直是对的。
 document.getElementById("pushFilters").addEventListener("click", function(e){
   var b = e.target.closest("button"); if (!b) return;
-  var pf = b.getAttribute("data-pf"), df = b.getAttribute("data-df");
+  // 已组合条件标签的点×事件: 单独去掉某一项(其余条件保持不变)
+  var clear = b.getAttribute("data-clearf");
+  if (clear){
+    if (clear === "all"){ PUSH_FILTER.person = "all"; PUSH_FILTER.day = "all"; PUSH_FILTER.type = "all"; PUSH_FILTER.dev = "all"; }
+    else PUSH_FILTER[clear] = "all";
+    // 同步按钮高亮状态, 否则按钮还亮着而条件已清 —— 状态与 UI 不一致
+    var attrs = { pf: "person", df: "day", tf: "type", devf: "dev" };
+    for (var ak in attrs){
+      var val = PUSH_FILTER[attrs[ak]];
+      Array.prototype.forEach.call(this.querySelectorAll("[" + ak + "]"), function(x){
+        x.classList.toggle("on", x.getAttribute(ak) === val);
+      });
+    }
+    loadPushLog(1);
+    return;
+  }
+  var pf = b.getAttribute("data-pf"), df = b.getAttribute("data-df"), tf = b.getAttribute("data-tf"), devf = b.getAttribute("data-devf");
+  var changed = false;
   if (pf){
     PUSH_FILTER.person = pf;
     Array.prototype.forEach.call(this.querySelectorAll("[data-pf]"), function(x){ x.classList.toggle("on", x === b); });
+    changed = true;
   }
   if (df){
     PUSH_FILTER.day = df;
     Array.prototype.forEach.call(this.querySelectorAll("[data-df]"), function(x){ x.classList.toggle("on", x === b); });
+    changed = true;
   }
-  if (pf || df) renderPushGroups();
+  if (tf){
+    PUSH_FILTER.type = tf;
+    Array.prototype.forEach.call(this.querySelectorAll("[data-tf]"), function(x){ x.classList.toggle("on", x === b); });
+    changed = true;
+  }
+  if (devf){
+    PUSH_FILTER.dev = devf;
+    Array.prototype.forEach.call(this.querySelectorAll("[data-devf]"), function(x){ x.classList.toggle("on", x === b); });
+    changed = true;
+  }
+  // 筛选变了 → 回第 1 页重新向后端请求(总数/页码都由服务端算, 本地无从得知)
+  if (changed) loadPushLog(1);
+});
+
+// ---- 有人记录标签页：仅显示 person=true 的记录 ----
+var PERSON_DATA = null;
+var PERSON_FILTER = { day: "all", village: "all" };
+var PERSON_PAGE = { offset: 0, limit: 200, hasMore: false, loading: false }; // 分页状态
+// PERSON_ITEMS 已在文件顶部统一声明, 此处不再重复
+
+function matchPersonFilter(it){
+  // 日期筛选已由 /api/person-events 服务端完成, 这里只做人称判定兜底
+  return it.person === true;
+}
+
+async function loadPersonRecords(append){
+  append = append || false;
+  if (PERSON_PAGE.loading) return;
+  if (append && !PERSON_PAGE.hasMore) return;
+  PERSON_PAGE.loading = true;
+  if (!append) PERSON_PAGE.offset = 0;
+  $("personGroups").innerHTML = append ? $("personGroups").innerHTML : '<div class="empty">加载中...</div>';
+  if (!append) $("personStats").innerHTML = "";
+  try {
+    // 走 /api/person-events(读 events.json 全量历史), day+village 服务端筛选, 分页加载
+    var d = await (await fetch("/api/person-events?day=" + PERSON_FILTER.day + "&village=" + encodeURIComponent(PERSON_FILTER.village) +
+      "&limit=" + PERSON_PAGE.limit + "&offset=" + PERSON_PAGE.offset)).json();
+    PERSON_DATA = d;
+    PERSON_PAGE.hasMore = (PERSON_PAGE.offset + (d.loaded || 0)) < (d.total || 0);
+    PERSON_PAGE.offset += (d.loaded || 0);
+    renderPersonRecords(append);
+  } catch(e){ $("personGroups").innerHTML = '<div class="empty">加载失败: ' + esc(e.message) + '</div>'; }
+  finally { PERSON_PAGE.loading = false; }
+}
+
+var PERSON_ALL_ITEMS = []; // 已加载的有人记录累计(分页追加)
+
+function renderPersonRecords(append){
+  append = append || false;
+  var box = $("personGroups"), stats = $("personStats"), info = $("personFilterInfo");
+  var chart = $("hourChart"), labels = $("hourLabels");
+  var d = PERSON_DATA;
+  if (!d || !d.groups || !d.groups.length){
+    if (!append) { stats.innerHTML = ""; info.textContent = ""; chart.innerHTML = ""; labels.innerHTML = ""; box.innerHTML = '<div class="empty">暂无推送记录</div>'; }
+    return;
+  }
+
+  // 累计已加载数据
+  var newItems = [];
+  for (var i = 0; i < d.groups.length; i++){
+    var items = d.groups[i].items.filter(matchPersonFilter);
+    for (var j = 0; j < items.length; j++) newItems.push(items[j]);
+  }
+  if (append) {
+    PERSON_ALL_ITEMS = PERSON_ALL_ITEMS.concat(newItems);
+  } else {
+    PERSON_ALL_ITEMS = newItems;
+    box.innerHTML = "";
+  }
+  var allItems = PERSON_ALL_ITEMS;
+  var totalShown = allItems.length;
+  var totalAll = d.total || totalShown;
+  var filteredOn = PERSON_FILTER.day !== "all" || PERSON_FILTER.village !== "all";
+  // 筛选条件标签: 村名 + 日期(快捷词或具体日期)
+  var filterTags = [];
+  if (PERSON_FILTER.village !== "all") filterTags.push(PERSON_FILTER.village);
+  if (PERSON_FILTER.day.indexOf("date:") === 0) filterTags.push(PERSON_FILTER.day.slice(5));
+  else if (PERSON_FILTER.day === "today") filterTags.push("今日");
+  else if (PERSON_FILTER.day === "yesterday") filterTags.push("昨日");
+  else if (PERSON_FILTER.day === "before") filterTags.push("前天及更早");
+  var tagStr = filterTags.length ? " · " + filterTags.join(" · ") : "";
+  info.textContent = filteredOn ? ("筛选结果 " + totalAll + " 条" + tagStr + "，已加载 " + totalShown) : ("共 " + totalAll + " 条有人记录，已加载 " + totalShown);
+  if (!totalShown){
+    if (!append) {
+      stats.innerHTML = ""; chart.innerHTML = ""; labels.innerHTML = "";
+      box.innerHTML = '<div class="empty">没有符合筛选条件的有人记录</div>';
+    }
+    return;
+  }
+
+  // 统计: 时段分布 / 设备分布 / 按日分组(基于已加载数据)
+  var deviceSet = {}, hourCount = [], dayGroups = {};
+  for (var h = 0; h < 24; h++) hourCount.push(0);
+  for (var i = 0; i < allItems.length; i++){
+    var it = allItems[i];
+    var dev = it.devName || it.serial;
+    if (dev) deviceSet[dev] = (deviceSet[dev] || 0) + 1;
+    var m = String(it.time).match(/(\d{1,2}):(\d{2})/);
+    if (m) hourCount[parseInt(m[1], 10)]++;
+    var day = String(it.time).split(" ")[0];
+    (dayGroups[day] = dayGroups[day] || []).push(it);
+  }
+  var peakHour = 0, maxHour = 0;
+  for (var h2 = 0; h2 < 24; h2++){ if (hourCount[h2] > maxHour){ maxHour = hourCount[h2]; peakHour = h2; } }
+  var peakDev = "—", maxDev = 0;
+  for (var dn in deviceSet){ if (deviceSet[dn] > maxDev){ maxDev = deviceSet[dn]; peakDev = dn; } }
+
+  stats.innerHTML =
+    '<div class="stat-tile"><div class="label">有人记录</div><div class="val person">' + totalAll + '</div><div class="sub">条(已加载 ' + totalShown + ')</div></div>' +
+    '<div class="stat-tile"><div class="label">最活跃时段</div><div class="val accent">' + peakHour + ':00</div><div class="sub">' + maxHour + ' 次</div></div>' +
+    '<div class="stat-tile"><div class="label">最活跃设备</div><div class="val" style="font-size:15px">' + esc(peakDev) + '</div><div class="sub">' + maxDev + ' 次</div></div>';
+
+  // 时段分布直方图(0-23时), 峰值高亮
+  var maxC = Math.max.apply(null, hourCount.concat([1]));
+  var bars = "", lbls = "";
+  for (var h3 = 0; h3 < 24; h3++){
+    var pct = Math.max(3, Math.round(hourCount[h3] / maxC * 100));
+    bars += '<div class="hour-bar' + (h3 === peakHour ? " peak" : "") + '" style="height:' + pct + '%" title="' + h3 + ':00 · ' + hourCount[h3] + ' 次"></div>';
+    lbls += '<span>' + (h3 % 6 === 0 ? h3 : "") + '</span>';
+  }
+  chart.innerHTML = bars;
+  labels.innerHTML = lbls;
+
+  // 按日期分组画廊(按 ts 倒序, 最新在前; 不能用字符串排序——"2026/9/7"会排在"2026/9/25"前面)
+  var dayTs = {};
+  for (var i3 = 0; i3 < allItems.length; i3++){
+    var dk = String(allItems[i3].time).split(" ")[0];
+    dayTs[dk] = Math.max(dayTs[dk] || 0, allItems[i3].ts || 0);
+  }
+  var days = Object.keys(dayGroups).sort(function(a, b){ return (dayTs[b] || 0) - (dayTs[a] || 0); });
+  // 非追加模式: 清空重建; 追加模式: 保留旧卡片(旧 day 分组 div 已存在), 后续按 day 增量填充
+  if (!append) PERSON_ITEMS = [];
+  var out = "";
+  for (var di = 0; di < days.length; di++){
+    var day = days[di], dItems = dayGroups[day];
+    // 日内记录也按 ts 倒序(最新在前), 保证顺序正确
+    dItems.sort(function(a, b){ return (b.ts || 0) - (a.ts || 0); });
+    out += '<div class="person-day" data-day="' + esc(day) + '" data-ts="' + (dayTs[day] || 0) + '">' +
+      '<div class="person-day-head"><span class="date">📅 ' + esc(day) + '</span><span class="count">' + dItems.length + ' 次</span></div>' +
+      '<div class="person-grid">';
+    for (var j2 = 0; j2 < dItems.length; j2++){
+      var it2 = dItems[j2];
+      var idx = PERSON_ITEMS.length;
+      PERSON_ITEMS.push(it2);
+      out += renderMonitorCard(it2, idx, it2.pic || "", "openPersonPic", "person");
+    }
+    out += '</div></div>';
+  }
+  // 追加模式: 把新 day 分组插入现有 DOM(按日期顺序); 全新模式: 直接替换
+  if (append && out) {
+    var tmp = document.createElement("div");
+    tmp.innerHTML = out;
+    var newDays = Array.prototype.slice.call(tmp.children);
+    for (var ni = 0; ni < newDays.length; ni++){
+      var nd = newDays[ni];
+      var ndTs = Number(nd.getAttribute("data-ts")) || 0;
+      // 找到第一个 ts 比它小的已有分组(日期更老), 插到它前面; 找不到就追加到末尾
+      var inserted = false;
+      var existing = box.querySelectorAll(".person-day");
+      for (var ei = 0; ei < existing.length; ei++){
+        var ed = existing[ei];
+        if ((Number(ed.getAttribute("data-ts")) || 0) < ndTs) {
+          box.insertBefore(nd, ed);
+          inserted = true;
+          break;
+        }
+      }
+      if (!inserted) box.appendChild(nd);
+    }
+    // 去掉旧的加载更多按钮(下面会重新加)
+    var oldMore = box.querySelector(".load-more-bar");
+    if (oldMore) oldMore.remove();
+  } else {
+    box.innerHTML = out;
+  }
+  // 还有更多数据时, 追加"加载更多"按钮
+  if (PERSON_PAGE.hasMore) {
+    var moreBar = document.createElement("div");
+    moreBar.className = "load-more-bar";
+    moreBar.style.cssText = "text-align:center;padding:16px 0";
+    moreBar.innerHTML = '<button class="btn" onclick="loadPersonRecords(true)">📦 加载更多（还剩 ' + (totalAll - totalShown) + ' 条）</button>';
+    box.appendChild(moreBar);
+  }
+}
+
+function openPersonPic(i){
+  var it = PERSON_ITEMS[i]; if (!it || !it.pic) return;
+  $("lbImg").src = it.origin || it.pic; // 灯箱看原图, 列表看缩略图
+  $("lbInfo").innerHTML =
+    '<div class="lb-head">' + aiBadgeHtml(it.person, it.ai) + '<span>' + esc(it.time) + ' · ' + esc(it.devName) + '</span></div>' +
+    (hasAiVerdict(it.ai) ? '<div>' + esc(it.ai) + '</div>'
+           : '<div class="muted-note">该图片没有匹配到 AI 判读记录</div>');
+  $("pushLightbox").classList.add("open");
+}
+
+// 有人记录筛选按钮事件: 改为服务端筛选(重新请求 /api/person-events)
+document.getElementById("personFilters").addEventListener("click", function(e){
+  var b = e.target.closest("button"); if (!b) return;
+  var pf = b.getAttribute("data-pf");
+  if (pf){
+    PERSON_FILTER.day = pf;
+    $("personDatePick").value = ""; // 点快捷按钮时清掉日期选择
+    Array.prototype.forEach.call(this.querySelectorAll("[data-pf]"), function(x){ x.classList.toggle("on", x === b); });
+    loadPersonRecords(); // 服务端按 day 筛选后重新拉取
+  }
+});
+
+// 日期选择器: 选任意日期, 看当天的有人记录
+$("personDatePick").addEventListener("change", function(){
+  if (this.value) {
+    PERSON_FILTER.day = "date:" + this.value; // date:YYYY-MM-DD
+    // 取消快捷按钮高亮(现在是自定义日期模式)
+    Array.prototype.forEach.call(document.querySelectorAll("#personFilters [data-pf]"), function(x){ x.classList.remove("on"); });
+    loadPersonRecords();
+  }
+});
+
+// 有人记录村子筛选: 全部村/双溪村/木山村
+document.getElementById("personVillageFilters").addEventListener("click", function(e){
+  var b = e.target.closest("button"); if (!b) return;
+  var vf = b.getAttribute("data-vf");
+  if (vf){
+    PERSON_FILTER.village = vf;
+    Array.prototype.forEach.call(this.querySelectorAll("[data-vf]"), function(x){ x.classList.toggle("on", x === b); });
+    loadPersonRecords(); // 服务端按村筛选后重新拉取
+  }
 });
 
 async function loadModels(){
@@ -487,6 +1072,71 @@ async function loadModels(){
     currentModel = sel.value || "zhipu";
   } catch(e){ console.error("模型加载失败", e); }
 }
+
+async function loadDevices(){
+  try {
+    var d = await (await fetch("/api/devices")).json();
+    var sel = $("deviceSel"); sel.innerHTML = "";
+    var list = d.devices || [];
+    for (var i = 0; i < list.length; i++){
+      var opt = document.createElement("option");
+      opt.value = list[i].serial;
+      opt.textContent = list[i].name + (list[i].watch ? "" : "（未启用）");
+      sel.appendChild(opt);
+    }
+    if (list.length > 0) {
+      currentDevice = list[0].serial;
+      sel.value = currentDevice;
+    }
+  } catch(e){ console.error("设备加载失败", e); }
+}
+
+async function loadStats(){
+  try {
+    var d = await (await fetch("/api/stats")).json();
+    $("statPerson").textContent = d.personToday + " 次";
+    $("statPerson").className = "val " + (d.personToday > 0 ? "highlight" : "safe");
+    $("statDevice").textContent = d.deviceCount + " 台";
+    var lastTime = d.lastTime ? (d.lastTime.split(" ")[1] || d.lastTime.slice(-8)) : "--";
+    $("statLast").textContent = lastTime;
+    $("statAi").textContent = d.aiRate + "%";
+  } catch(e){}
+}
+
+// 自动刷新开关
+var autoRefresh = false, _autoTimer = null;
+$("autoRefreshBtn").addEventListener("click", function(){
+  autoRefresh = !autoRefresh;
+  this.classList.toggle("on", autoRefresh);
+  if (autoRefresh) {
+    this.title = "自动刷新中（每 30 秒）· 点击关闭";
+    _autoTimer = setInterval(function(){
+      // 按当前所在标签页刷新对应内容
+      var curTab = "";
+      Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(b){ if (b.classList.contains("on")) curTab = b.getAttribute("data-tab"); });
+      if (curTab === "person") {
+        loadPersonRecords();
+      } else if (curTab === "push") {
+        loadPushLog();
+      } else {
+        loadHistory(true);
+      }
+      loadStats();
+      fetch("/api/events/changed").then(function(r){ return r.json(); }).then(function(d){
+        if (d.hasNew && d.newCount > 0) {
+          $("newAlert").classList.add("show");
+          $("newCount").textContent = d.newCount;
+          $("newBadge").classList.add("show");
+          // 5 秒后自动消失
+          setTimeout(function(){ $("newAlert").classList.remove("show"); }, 5000);
+        }
+      }).catch(function(){});
+    }, 30000);
+  } else {
+    this.title = "每 30 秒自动刷新，检测到新报警会提示";
+    if (_autoTimer) { clearInterval(_autoTimer); _autoTimer = null; }
+  }
+});
 
 async function capture(force){
   var btn = $("btnCapture"); btn.disabled = true;
@@ -605,33 +1255,32 @@ function picFallback(img){
 function renderCards(events){
   var box = $("cards");
   if (!events.length){ box.innerHTML = '<div class="empty">暂无报警记录</div>'; return; }
+  HISTORY_ITEMS = events; // 存起来供灯箱取回记录详情
   var out = "";
   for (var i = 0; i < events.length; i++){
     var e = events[i];
-    // 是否有人: 没有 AI 结论的记录(萤石设备端人形标签直通进来的)不再冒充成 AI 的"有人"
-    var badges = aiBadgeHtml(e.person, e.ai);
-    if (e.abnormal) badges += '<span class="badge abn">异常</span>';
-    // provider 为空时以前会渲染出一个空的灰块, 现在干脆不渲染
-    if (e.provider) badges += '<span class="badge prov">' + esc(e.provider) + "</span>";
-    if (!e.pushed) badges += '<span class="badge skip">未推送</span>';
     var fileEnc = encodeURIComponent(e.file || "");
+    var evKey = esc(e.serial) + "@" + (e.ts || 0);
     // 选中/删除的定位键。空 file 的记录(没截到图)靠 file 根本区分不开 —— 都等于 "",
     // Set 里存一个空串就只能选中一条, 删除时还会误伤全部。改用 设备+时间戳 做键。
-    var evKey = esc(e.serial) + "@" + (e.ts || 0);
-    // 记录可能压根没有配图(萤石人形标签消息不带截图、兜底抓图又失败时, file 是空串)。
-    // 原来这里无条件拼 <img src="/captures/">, 请求 404 后只剩 .card img 的黑色底 → 黑屏卡片。
-    // 现在: 没图直接渲染占位(也不发无效请求), 有图但文件已被清理则由 onerror 换成同样的占位。
-    var pic = e.file
-      ? '<img loading="lazy" src="/captures/' + fileEnc + '" onerror="picFallback(this)">'
-      : '<div class="no-pic"><span>无截图</span><span class="sub">推送时未取到画面</span></div>';
-    out += '<div class="card" data-file="' + fileEnc + '" data-key="' + evKey + '" data-ts="' + (e.ts || "") + '" data-serial="' + esc(e.serial) + '">' +
-      '<input type="checkbox" class="select-box" data-key="' + evKey + '">' +
-      pic +
-      '<button class="del-btn">删除</button>' +
-      '<div class="card-meta"><span class="t">' + esc(e.time) + '</span><span class="dev">' + esc(e.name) + '</span><span class="title">' + esc(e.title) + "</span></div>" +
-      '<div class="card-badges">' + badges + "</div>" +
-      '<div class="card-ai">' + esc(e.ai) + "</div>" +
-      "</div>";
+    var picUrl = e.file ? "/captures/" + fileEnc : "";
+    var card = renderMonitorCard(e, i, picUrl, "openHistoryPic", "history");
+    // 给实时画面的卡片加上 data 属性(选中/删除用), 并包裹删除按钮
+    var cardDiv = document.createElement("div");
+    cardDiv.innerHTML = card;
+    var mc = cardDiv.firstChild;
+    mc.setAttribute("data-file", fileEnc);
+    mc.setAttribute("data-key", evKey);
+    mc.setAttribute("data-ts", String(e.ts || ""));
+    mc.setAttribute("data-serial", esc(e.serial));
+    mc.classList.add("card");
+    // 删除按钮
+    var delBtn = document.createElement("button");
+    delBtn.className = "del-btn";
+    delBtn.textContent = "删除";
+    delBtn.setAttribute("data-key", evKey);
+    mc.appendChild(delBtn);
+    out += mc.outerHTML;
   }
   box.innerHTML = out;
   updateBulkBar();
@@ -718,7 +1367,8 @@ $("btnCapture").addEventListener("click", function(){ capture(true); });
 Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(b){
   b.addEventListener("click", function(){ switchTab(b.getAttribute("data-tab")); });
 });
-$("btnRefreshPush").addEventListener("click", loadPushLog);
+$("btnRefreshPush").addEventListener("click", function(){ loadPushLog(1); });
+$("btnRefreshPerson").addEventListener("click", loadPersonRecords);
 $("btnAnalyze").addEventListener("click", analyze);
 $("btnAlarm").addEventListener("click", checkAlarms);
 $("btnToday").addEventListener("click", checkTodayPerson);
@@ -788,9 +1438,40 @@ $("btnDeselectAll").addEventListener("click", function(){
 $("btnDeleteSel").addEventListener("click", deleteSelected);
 $("btnDeleteAll").addEventListener("click", deleteAllEvents);
 
+// 批量 AI 分析选中的记录
+async function analyzeSelected(){
+  var cards = Array.prototype.slice.call(document.querySelectorAll(".card.selected"));
+  if (cards.length === 0) return;
+  var btn = $("btnAnalyzeSel");
+  btn.disabled = true;
+  var total = cards.length, done = 0;
+  // 只分析有配图的记录
+  var tasks = cards.filter(function(card){ return decodeURIComponent(card.getAttribute("data-file") || ""); });
+  if (tasks.length === 0){ btn.disabled = false; return; }
+  var oldHtml = btn.textContent;
+  for (var i = 0; i < tasks.length; i++){
+    var card = tasks[i];
+    var serial = card.getAttribute("data-serial") || "";
+    var file = decodeURIComponent(card.getAttribute("data-file") || "");
+    if (!file) continue;
+    btn.textContent = "⏳ 分析中 " + (done + 1) + "/" + tasks.length;
+    try {
+      await fetch("/api/analyze?serial=" + encodeURIComponent(serial) + "&model=" + encodeURIComponent(currentModel) + "&file=" + encodeURIComponent(file));
+      done++;
+    } catch(e){ console.error("分析失败", e); done++; }
+  }
+  btn.textContent = oldHtml;
+  btn.disabled = false;
+  selectedKeys.clear();
+  updateBulkBar();
+  loadHistory(true);
+}
+$("btnAnalyzeSel").addEventListener("click", analyzeSelected);
+
 loadModels();
+loadStats();
+loadDevices().then(function(){ capture(false); });
 loadHistory(false);
-capture(false);
 </script>
 </body>
 </html>

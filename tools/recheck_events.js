@@ -30,7 +30,7 @@ const judge = require(path.join(ROOT, "lib", "judge"));
 const store = require(path.join(ROOT, "lib", "store"));
 
 // 与 webapp.js 的 PROVIDER_LABELS 同一套写法
-const LABELS = { zhipu: "GLM-4v", agnes: "Agnes", xiaohongshu: "小红书" };
+const LABELS = { mota: "魔塔DeepSeek", ali: "阿里DeepSeek", agnes: "Agnes", xiaohongshu: "小红书" };
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
