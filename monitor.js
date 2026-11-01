@@ -13,6 +13,7 @@ const { createClient } = require("./lib/ys7");
 const { analyzeImage } = require("./lib/ai");
 const { push } = require("./lib/push");
 const { judgePerson } = require("./lib/judge"); // 判人逻辑唯一实现(与 webapp/webhook 共用)
+const capturename = require("./lib/capturename"); // 抓图文件名: {村名}_{日期}_{序列号}[_p].jpg
 const store = require("./lib/store"); // events.json 跨进程事务存储(与 webapp/webhook 共用同一把锁)
 const hdcapture = require("./lib/hdcapture"); // 高清抓图: 主码流截帧, 失败回落原抓图接口
 
@@ -31,10 +32,18 @@ function devName(serial) {
   return d ? d.name : serial;
 }
 function ts() { return new Date().toLocaleTimeString(); }
+// 设备归属哪个村(按名称前缀推断, 与 webapp/webhook 一致)
+function deviceVillage(serial) {
+  const d = (cfg.devices || []).find(function (x) { return x.serial === serial; });
+  const name = d ? d.name : String(serial || "");
+  if (name.indexOf("双溪村") >= 0) return "双溪村";
+  if (name.indexOf("木山村") >= 0) return "木山村";
+  return "";
+}
 
 async function grab(serial) {
   console.log("[" + ts() + "] 抓图 " + devName(serial) + " ...");
-  const file = path.join(ROOT, "captures", serial + "_" + Date.now() + ".jpg");
+  const file = path.join(ROOT, "captures", capturename.captureFileName(serial, Date.now(), deviceVillage(serial), false));
   // 高清抓图: 主码流截帧(3200x1800), 失败自动回落原抓图接口(768x432)
   const meta = await hdcapture.captureHD(client, serial, file);
   const bytes = fs.statSync(file).size;
@@ -202,10 +211,12 @@ async function cmdWatch(sec) {
         // 配额类失败退避中(10028抓图次数超限/9048取流超限): 未到冷却点静默跳过, 不硬试
         const bk = (state.captureBackoff || {})[t.serial];
         if (bk && bk.nextOk && Date.now() < bk.nextOk) continue;
-        // 抓图接口当日配额已耗尽(hdcapture 记的跨进程标记, 见 lib/hdcapture.js CAPTURE_QUOTA_FILE):
-        // 10028 按自然日重置, 当天再怎么试都必然失败 —— 直接整轮跳过, 不再逐设备硬试刷屏。
-        // 注: 高清截帧(主码流)本身不吃抓图配额, 但退避期内 lib/hdcapture 也会一并跳过(宁缺勿烧配额)。
-        if (hdcapture.captureQuotaExhausted() || hdcapture.inStreamBackoff()) continue;
+        // 抓图接口**当日配额**已耗尽(hdcapture 记的跨进程标记, 见 lib/hdcapture.js CAPTURE_QUOTA_FILE):
+        // 10028 按自然日重置, 当天再怎么试都必然失败 → 直接整轮跳过, 不再逐设备硬试刷屏。
+        // ⚠️ 注意**不要**在这里因为 9048 退避就跳过(2026-10-09 修正): 9048 是并发观看限制,
+        // 只影响拉流截帧那一步, 单次快照抓图不受影响。2026-10-08 我把两者一起挡了,
+        // 结果退避期间(10 分钟一轮递增)巡检整轮白跑, 存档图白白缺失。
+        if (hdcapture.captureQuotaExhausted()) continue;
         // 抓图间隔控制: 距上次存档不足 CAPTURE_MIN_MS 则跳过本轮, 避免高频拉流截帧刷爆带宽
         const lastCap = (state.lastCapture || {})[t.serial] || 0;
         if (Date.now() - lastCap < CAPTURE_MIN_MS) continue;

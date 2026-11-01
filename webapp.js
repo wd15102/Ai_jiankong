@@ -12,6 +12,7 @@ const { judgePerson } = require("./lib/judge"); // 判人逻辑唯一实现(与 
 const store = require("./lib/store"); // events.json 跨进程事务存储(与 monitor/webhook 共用同一把锁)
 const hdcapture = require("./lib/hdcapture"); // 高清抓图: 主码流截帧, 失败回落原抓图接口
 const { push, pushTestTemplate } = require("./lib/push"); // 消息推送: 单用户推送 /api/push-single 端点用
+const capturename = require("./lib/capturename"); // 抓图文件名: {村名}_{日期}_{序列号}[_p].jpg
 
 const ROOT = __dirname;
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "config.json"), "utf8"));
@@ -36,7 +37,14 @@ function resolveApiToken() {
   } catch (e) { return ""; }
 }
 const API_TOKEN = resolveApiToken();
-const PROTECTED_PATHS = ["/api/capture", "/api/analyze", "/api/alarms/check", "/api/alarms/check-today", "/api/events/delete", "/api/events/delete-all"];
+// 需要 token 才能访问的路径(非回环时)。
+// ⚠️ 2026-10-08 补: /api/push-single 之前漏了 —— 它会**触发真实微信推送**,
+// 公网隧道暴露时任何人都能拿它骚扰家人/消耗推送配额。
+const PROTECTED_PATHS = [
+  "/api/capture", "/api/analyze", "/api/alarms/check", "/api/alarms/check-today",
+  "/api/events/delete", "/api/events/delete-all",
+  "/api/push-single",
+];
 function isLoopback(req) {
   const a = req.socket && req.socket.remoteAddress;
   return a === "127.0.0.1" || a === "::1" || a === "::ffff:127.0.0.1";
@@ -160,7 +168,7 @@ function loadPushLog() {
   }
   return [];
 }
-// captures 抓图按 {serial}_p{ms}.jpg / {serial}_{ms}.jpg 命名, 文件名里自带毫秒时间戳,
+// captures 抓图按 {村名}_{YYYY}_{MM}_{DD}_{HH}_{mm}_{ss}_{序列号}[_p].jpg 命名(见 lib/capturename.js),
 // 推送记录按"同设备 ±2分钟内最近的抓图"关联(与 webhook 复用存图的窗口一致)
 function loadCaptureIndex() {
   const idx = {};
@@ -168,23 +176,17 @@ function loadCaptureIndex() {
   // 不扫 motion 的话, 推送记录页里占八成以上的移动侦测条目会全部变成"没有关联图"。
   const dirs = [
     { d: path.join(ROOT, "captures"), pre: "/captures/" },
+    { d: path.join(ROOT, "captures", "push"), pre: "/captures/push/" },
     { d: path.join(ROOT, "captures", "motion"), pre: "/captures/motion/" }
   ];
   for (const src of dirs) {
     try {
       for (const f of fs.readdirSync(src.d)) {
         if (!/\.jpg$/i.test(f)) continue;
-        const us = f.indexOf("_");
-        if (us <= 0) continue;
-        const serial = f.slice(0, us);
-        let rest = f.slice(us + 1, -4);
-        // 文件名含 "p" 前缀 = 低清图(设备端报警截图 768x432); 不含 = 高清原图(ffmpeg 主码流截帧 3200x1800)
-        const isHD = rest.charAt(0) !== "p";
-        if (!isHD) rest = rest.slice(1);
-        const t = Number(rest);
-        if (!isFinite(t) || t <= 0) continue;
-        if (!idx[serial]) idx[serial] = [];
-        idx[serial].push({ t: t, file: f, pre: src.pre, hd: isHD });
+        const meta = capturename.parseCaptureName(f);
+        if (!meta) continue; // 缩略图/无法识别的名字: 跳过
+        if (!idx[meta.serial]) idx[meta.serial] = [];
+        idx[meta.serial].push({ t: meta.t, file: f, pre: src.pre, hd: meta.hd });
       }
     } catch (e) {} // motion/ 还没产生过: 静默跳过
   }
@@ -238,7 +240,7 @@ function buildPushGroups(limit, offset, typeFilter, deviceFilter, personFilter, 
   // limit/offset 用于分页; typeFilter 可选: "all"/"motiondetect"/"human"/"pet"/"vehicle" 服务端类型筛选
   // deviceFilter 可选: "all" / 村名("双溪村"/"木山村") / **设备 serial**(按具体设备筛)
   // personFilter 可选: "all"/"yes"(有人)/"no"(无人)/"none"(无AI结论)
-  // dayFilter 可选: "all"/"today"/"yesterday"/"before"
+  // dayFilter 可选: "all"/"today"/"yesterday"/"before"/"date:YYYY-MM-DD"(与有人记录页日期选择器一致)
   // person/day 必须在服务端筛: 之前"时间"在浏览器里只筛当前页, 分页却按服务端全量算,
   // 出现"筛选出2条却有39页"的错位(2026-10-07 用户截图实测) —— 四个筛选现在全部进服务端, 总数/页码恒一致
   const VISIBLE = { "motiondetect": "移动侦测", "human": "人形检测", "pet": "宠物侦测", "vehicle": "车辆检测" };
@@ -341,6 +343,7 @@ function buildPushGroups(limit, offset, typeFilter, deviceFilter, personFilter, 
     groups[key].items.push({
       time: time.slice(0, 19), serial: serial, devName: devName(serial), text: text.slice(0, 120),
       tsMs: tsMs, rawType: rawType, act: act, merged: 1,
+      picFile: e.picFile || "", // 推送记录页专用图(captures/push/, 永久保留)
     });
   }
   // ---------- IntelligentTag 活动片段归并 ----------
@@ -442,7 +445,10 @@ function buildPushGroups(limit, offset, typeFilter, deviceFilter, personFilter, 
       if (!ev && nearbyPic) ev = evByFile[path.basename(nearbyPic)] || null;
       // 配图: 事件有自己的图就用它; 事件无图(抓图/截图全失败)才用就近抓图兜底 ——
       // 兜底场景事件本身没有AI结论(无图不分析), 不存在"结论与画面不符"
-      it.pic = (ev && ev.file) ? ("/captures/" + encodeURIComponent(ev.file)) : nearbyPic;
+      // 推送记录页专用图优先(captures/push/, 永久保留); 否则事件自己的图, 再否则就近抓图
+      it.pic = it.picFile ? ("/captures/push/" + encodeURIComponent(it.picFile))
+              : (ev && ev.file) ? ("/captures/" + encodeURIComponent(ev.file))
+              : nearbyPic;
       it.ai = ev && ev.ai && ev.ai !== "(点击AI分析)" ? String(ev.ai).trim() : "";
       // person 三态(2026-10-08 修): 原来 it.person 只取 ev.person===true 得到的布尔,
       // 于是 personFilter=none(无AI结论) **恒为 0 条** —— 筛选按钮点了永远空白。
@@ -458,7 +464,10 @@ function buildPushGroups(limit, offset, typeFilter, deviceFilter, personFilter, 
       it.file = ev ? (ev.file || "") : "";          // 关联的抓图文件名, 供前端"未推送"按钮定位
       it.provider = ev ? (ev.provider || "") : "";  // AI分析模型名, 供前端卡片展示
       it.veh = ev ? (ev.veh || 0) : 0;             // 车辆标记
-      delete it.tsMs;
+      // ⚠️ **不要 delete it.tsMs**(2026-10-08 修): 下面第 ~473 行构建 flat 时要用它做全局排序键,
+      // 先删掉会让 flat 里全是 undefined → 排序退化成 no-op → 实测"全部"视图前 151 页
+      // 全被占满人形状、移动侦测永远翻不到(与 :466 注释的设计意图完全相反)。
+      // tsMs 是毫秒数字, 外发给前端做数值排序/跨月比较比 time 字符串更可靠。
       delete it.act;                                // 归并用的内部字段, 不外发
     }
     return g;
@@ -475,6 +484,12 @@ function buildPushGroups(limit, offset, typeFilter, deviceFilter, personFilter, 
   // 时间的月/日不补零("2026/9/30" vs "2026/10/8"), 字典序比较会把 9/30 排到 10/8 后面,
   // 表现为"第 1 页显示 9 月 30 日"而不是最新(2026-10-08 实测)。
   flat.sort(function (a, b) { return (b.tsMs || 0) - (a.tsMs || 0); });
+  return finishPushGroups(flat, typeFilter, deviceFilter, personFilter, dayFilter, limit, offset);
+}
+
+// 筛选/排序/分页/分组的后半段: 推送记录页(push_log 数据源)与历史回退(events.json 数据源)共用,
+// 避免两份逻辑漂移(2026-10-24 抽取自 buildPushGroups)
+function finishPushGroups(flat, typeFilter, deviceFilter, personFilter, dayFilter, limit, offset) {
   // 服务端类型筛选(看板点"移动侦测"/"宠物侦测"标签时传 type 参数, 按类型过滤后再分页)
   if (typeFilter && typeFilter !== "all") flat = flat.filter(function(x){ return x.type === typeFilter; });
   // 服务端设备筛选(device 参数, 2026-10-08 支持按**具体设备**筛):
@@ -494,10 +509,13 @@ function buildPushGroups(limit, offset, typeFilter, deviceFilter, personFilter, 
   else if (personFilter === "no") flat = flat.filter(function(x){ return x.it.person === false; });
   else if (personFilter === "none") flat = flat.filter(function(x){ return x.it.person !== true && x.it.person !== false; });
   // 时间筛选(按条目时间的本地日历日)
+  // dayFilter 除 all/today/yesterday/before 外, 还支持 "date:YYYY-MM-DD"(选任意日期, 与有人记录页一致)
   if (dayFilter && dayFilter !== "all") {
     const today = pushDayOffset(0), yesterday = pushDayOffset(1);
+    const dateOnly = String(dayFilter).indexOf("date:") === 0 ? pushDayKey(String(dayFilter).slice(5)) : "";
     flat = flat.filter(function(x){
       const k = pushDayKey(x.it.time);
+      if (dateOnly) return k === dateOnly;
       if (dayFilter === "today") return k === today;
       if (dayFilter === "yesterday") return k === yesterday;
       if (dayFilter === "before") return !!k && k < yesterday;
@@ -517,6 +535,64 @@ function buildPushGroups(limit, offset, typeFilter, deviceFilter, personFilter, 
     byType[x.type].items.push(x.it);
   }
   return { groups: out, total: total, grand: grand, loaded: page.length };
+}
+
+// 历史回退数据源: 所选日期不在 push_log.json 覆盖范围内时(原始报文被 storage.pushLogRetention 裁剪),
+// 改用 events.json(长期保存, eventRetention=-1) —— 否则按日期筛选历史会永远查不到
+// (2026-10-24 东哥实测: 推送记录页选 2026-10-14 + 双溪村 → 0 条, 但有人记录页明明有 81 条)
+function buildPushGroupsFromEvents(limit, offset, typeFilter, deviceFilter, personFilter, dayFilter) {
+  // events.json 的 title → 推送记录页的四类口径(与 buildPushGroups 的类型分组保持一致)
+  var EVENT_TYPE = {
+    "人形检测": "human",
+    "本地检测(疑似有人)": "human",
+    "告警": "human",
+    "本地检测(疑似车辆)": "vehicle",
+    "智能侦测": "motiondetect"
+  };
+  var VISIBLE = { human: "人形检测", motiondetect: "移动侦测", pet: "宠物侦测", vehicle: "车辆检测" };
+  var dateOnly = (dayFilter && String(dayFilter).indexOf("date:") === 0) ? pushDayKey(String(dayFilter).slice(5)) : "";
+  var flat = [];
+  var events = loadEvents();
+  for (var i = 0; i < events.length; i++) {
+    var e = events[i];
+    var type = EVENT_TYPE[e.title || ""];
+    if (!type) continue;                       // 定时存档/定时巡查/实时抓图/Web实时分析 等非推送来源不进推送记录页
+    if (e.source === "kanjia") continue;       // 看板主动抓图
+    var tsMs = Number(e.ts) || 0;
+    if (dateOnly && pushDayKey(e.time) !== dateOnly) continue;
+    if (!e.file) continue;                        // 与 push_log 数据源一致: 无截图的条目不进推送记录页(纯噪音)
+    var hasAi = !!(e.ai && e.ai !== "(点击AI分析)" && e.ai !== "(等待分析...)");
+    flat.push({
+      type: type, name: VISIBLE[type], count: 1, rawCount: 1, tsMs: tsMs,
+      it: {
+        time: String(e.time || ""), serial: e.serial || "", devName: e.name || e.serial || "",
+        text: "", tsMs: tsMs, rawType: String(e.title || ""), merged: 1,
+        pic: e.file ? ("/captures/" + encodeURIComponent(e.file)) : "",
+        ai: hasAi ? String(e.ai).trim() : "",
+        person: hasAi ? (e.person === true) : null,
+        hasAi: hasAi, pushed: e.pushed === true, file: e.file || "",
+        provider: e.provider || "", veh: e.veh || 0
+      }
+    });
+  }
+  flat.sort(function (a, b) { return (b.tsMs || 0) - (a.tsMs || 0); });
+  return finishPushGroups(flat, typeFilter, deviceFilter, personFilter, dayFilter, limit, offset);
+}
+
+// push_log.json 是否覆盖某个日期(按条目时间)。用于决定"按日期筛选"时走 push_log 还是回退 events.json
+function pushLogHasDate(dateKey) {
+  var key = pushDayKey(dateKey);
+  if (!key) return false;
+  return loadPushLog().some(function (e) {
+    var body = e.body || e;
+    try { if (typeof body === "string") body = JSON.parse(body); if (body && body.body) body = body.body; } catch (err) {}
+    var time = String((body && (body.alarmTime || body.time)) || e.time || "");
+    if (!time && body && body.payload && String(body.payload).indexOf("dateTime") >= 0) {
+      var m = String(body.payload).match(/"dateTime":"([^"]+)"/);
+      if (m) time = m[1];
+    }
+    return pushDayKey(time) === key;
+  });
 }
 
 function latestCapture(serial) {
@@ -548,7 +624,8 @@ async function doCapture(serial, forceNew) {
     }
   }
   // 高清抓图: 主码流截帧(3200x1800), 失败自动回落原抓图接口(768x432)
-  const file = path.join(ROOT, "captures", serial + "_" + Date.now() + ".jpg");
+  const fname = capturename.captureFileName(serial, Date.now(), deviceVillage(serial), false);
+  const file = path.join(ROOT, "captures", fname);
   await hdcapture.captureHD(client, serial, file);
   return { file: path.basename(file), time: new Date().toLocaleString("zh-CN",{hour12:false}), url: "/captures/" + path.basename(file), serial: serial, name: devName(serial), cached: false, hd: true };
   })();
@@ -629,7 +706,7 @@ async function checkDeviceAlarms(serial) {
       if (!isFinite(tsMs)) tsMs = Date.now();
       var picFile = "";
       if (a.alarmPicUrl) {
-        picFile = serial + "_a" + tsMs + ".jpg";
+        picFile = capturename.captureFileName(serial, tsMs, deviceVillage(serial), true);
         try { await client.downloadTo(a.alarmPicUrl, path.join(ROOT, "captures", picFile)); }
         catch (eD) { picFile = ""; }
       }
@@ -694,7 +771,7 @@ async function checkTodayPersonAlarms(serial) {
         var ts = a.alarmTime || 0;
         if (existingKeys.has(t.serial + "@" + ts)) { perDevice[t.serial].exist++; continue; }
         // 优先下载报警自带截图（报警那一刻的画面）；失败则现场抓图兜底
-        var fname = t.serial + "_a" + ts + ".jpg";
+        var fname = capturename.captureFileName(t.serial, ts, deviceVillage(t.serial), true);
         var ok = false;
         if (a.alarmPicUrl) {
           try { await client.downloadTo(a.alarmPicUrl, path.join(ROOT, "captures", fname)); ok = true; }
@@ -788,8 +865,12 @@ function makeHandler() {
       const type = u.searchParams.get("type") || "all";
       const device = u.searchParams.get("device") || "all"; // all/双溪村/木山村
       const person = u.searchParams.get("person") || "all"; // all/yes/no/none
-      const day = u.searchParams.get("day") || "all";       // all/today/yesterday/before
-      const r = buildPushGroups(limit, offset, type, device, person, day);
+      const day = u.searchParams.get("day") || "all";       // all/today/yesterday/before/date:YYYY-MM-DD
+      // 选了具体日期但 push_log.json 没覆盖到(原始报文被 pushLogRetention 裁掉) → 回退 events.json 全量历史
+      const useEvents = String(day).indexOf("date:") === 0 && !pushLogHasDate(String(day).slice(5));
+      const r = useEvents
+        ? buildPushGroupsFromEvents(limit, offset, type, device, person, day)
+        : buildPushGroups(limit, offset, type, device, person, day);
       sendJson(res, 200, { total: r.total, grand: r.grand, loaded: r.loaded, hasMore: offset + r.loaded < r.total, groups: r.groups });
       return;
     }
@@ -937,10 +1018,12 @@ function makeHandler() {
     if (req.method === "GET" && p.indexOf("/captures/") === 0) {
       let rel = decodeURIComponent(p.slice("/captures/".length));
       // 移动侦测暂存图在 captures/motion/ 子目录(见 webhook.js 的分级留存), 单独放行
+      // 推送记录页专用图在 captures/push/ 子目录(2026-10-24 起, 永久保留)
       let dir = path.join(ROOT, "captures");
-      if (rel.indexOf("motion/") === 0) { dir = path.join(ROOT, "captures", "motion"); rel = rel.slice("motion/".length); }
+      if (rel.indexOf("push/") === 0) { dir = path.join(ROOT, "captures", "push"); rel = rel.slice("push/".length); }
+      else if (rel.indexOf("motion/") === 0) { dir = path.join(ROOT, "captures", "motion"); rel = rel.slice("motion/".length); }
       const name = path.basename(rel); // basename 兜底防路径穿越
-      if (!/^[A-Za-z0-9_\-]+\.(jpg|jpeg)$/i.test(name)) { res.writeHead(400); res.end(""); return; }
+      if (!capturename.safeImageName(name)) { res.writeHead(400); res.end(""); return; }
       fs.readFile(path.join(dir, name), function(err, buf) {
         if (err) { res.writeHead(404); res.end(""); return; }
         res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "max-age=600" });

@@ -294,9 +294,7 @@ footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(-
     <span class="f-sep"></span>
     <span class="f-label">时间</span>
     <button class="fb on" data-df="all">全部</button>
-    <button class="fb" data-df="today">今日</button>
-    <button class="fb" data-df="yesterday">昨日</button>
-    <button class="fb" data-df="before">前天及更早</button>
+    <input type="date" id="pushDatePick" class="date-input" title="选择任意日期查看当天推送">
     <span class="f-sep"></span>
     <span class="f-label">类型</span>
     <button class="fb on" data-tf="all">全部</button>
@@ -364,7 +362,9 @@ footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(-
     if (t) { TOKEN = t; try { localStorage.setItem("webapp_token", t); } catch(e){} }
     else { try { TOKEN = localStorage.getItem("webapp_token"); } catch(e){} }
   } catch(e){}
-  var PROTECTED = ["/api/capture","/api/analyze","/api/alarms/check","/api/alarms/check-today","/api/events/delete","/api/events/delete-all"];
+  // 必须与 webapp.js 的 PROTECTED_PATHS 保持一致 —— 漏一个, 远程访问时该请求会 401
+  // (/api/push-single 曾经两边都漏, 结果远程点"未推送"按钮直接失败)
+  var PROTECTED = ["/api/capture","/api/analyze","/api/alarms/check","/api/alarms/check-today","/api/events/delete","/api/events/delete-all","/api/push-single"];
   if (TOKEN) {
     var _orig = window.fetch ? window.fetch.bind(window) : null;
     if (_orig) {
@@ -644,27 +644,36 @@ async function loadPushLog(page){
 }
 function renderPushGroups(){
   var box = $("pushGroups"), stats = $("pushStats"), info = $("pushFilterInfo");
-  // 注意: 下面第 ~621 行也有一句 var anyFilter = ...(重新计算, 因为 var 提升会覆盖)。
-  // 这里显式独立算一份给空态提示用, 避免依赖声明顺序。
-  var anyFilterNow = (PUSH_FILTER.person !== "all" || PUSH_FILTER.day !== "all"
-                      || PUSH_FILTER.dev !== "all" || PUSH_FILTER.type !== "all");
-  // 空态也要显示"已组合"标签, 否则筛出 0 条时用户不知道到底筛了什么(条件却还在 PUSH_FILTER 里)
-  var emptyChips = [];
-  if (PUSH_FILTER.day !== "all") emptyChips.push("时间:" + ({today:"今日",yesterday:"昨日",before:"前天及更早"})[PUSH_FILTER.day]);
-  if (PUSH_FILTER.type !== "all") emptyChips.push(({human:"人形检测",motiondetect:"移动侦测",pet:"宠物侦测",vehicle:"车辆检测"})[PUSH_FILTER.type] || PUSH_FILTER.type);
-  if (PUSH_FILTER.dev !== "all") {
-    var eDevBtn = document.querySelector('[data-devf="' + PUSH_FILTER.dev + '"]');
-    emptyChips.push("设备:" + (eDevBtn ? eDevBtn.textContent : PUSH_FILTER.dev));
-  }
-  if (PUSH_FILTER.person !== "all") emptyChips.push(({yes:"有人",no:"无人",none:"无AI结论"})[PUSH_FILTER.person]);
-  var eActive = $("pushActiveFilter");
-  if (eActive) eActive.innerHTML = emptyChips.length
-    ? ('<span class="f-label">已组合</span>' + emptyChips.map(function(t){ return '<span class="fchip static">' + esc(t) + '</span>'; }).join("")
-       + '<button class="fchip clear" data-clearf="all">清空全部</button>')
-    : "";
+  var anyFilter = PUSH_FILTER.person !== "all" || PUSH_FILTER.day !== "all"
+               || PUSH_FILTER.dev !== "all" || PUSH_FILTER.type !== "all";
+  // 当前组合条件一览(2026-10-08): 四个筛选可任意组合, 光靠下面那行小字看不出"到底筛了什么"
+  // (尤其筛了设备时看不出), 所以把每个非"全部"的条件做成可单独点掉的小标签。
+  // **空态(筛出0条)时也要渲染** —— 否则条件还在 PUSH_FILTER 里但用户看不见, 不知道该改哪个。
+  // 写一份实现即可(之前分了static/可点掉两份, 映射表要改两处, 容易漏改)。
+  (function renderActiveChips(){
+    var activeBox = $("pushActiveFilter");
+    if (!activeBox) return;
+    var DAY_LABEL = { today: "今日", yesterday: "昨日", before: "前天及更早" };
+    var PER_LABEL = { yes: "有人", no: "无人", none: "无AI结论" };
+    var TYPE_LABEL = { human: "人形检测", motiondetect: "移动侦测", pet: "宠物侦测", vehicle: "车辆检测" };
+    var chips = [];
+    if (PUSH_FILTER.day !== "all")    chips.push({ k: "day", t: "时间:" + (PUSH_FILTER.day.indexOf("date:") === 0 ? PUSH_FILTER.day.slice(5) : (DAY_LABEL[PUSH_FILTER.day] || PUSH_FILTER.day)) });
+    if (PUSH_FILTER.type !== "all")   chips.push({ k: "type", t: TYPE_LABEL[PUSH_FILTER.type] || PUSH_FILTER.type });
+    if (PUSH_FILTER.dev !== "all") {
+      // device 可能是村名也可能是 serial —— serial 时显示按钮上的短名更好认
+      var devBtn = document.querySelector('[data-devf="' + PUSH_FILTER.dev + '"]');
+      chips.push({ k: "device", t: "设备:" + (devBtn ? devBtn.textContent : PUSH_FILTER.dev) });
+    }
+    if (PUSH_FILTER.person !== "all") chips.push({ k: "person", t: PER_LABEL[PUSH_FILTER.person] || PUSH_FILTER.person });
+    activeBox.innerHTML = chips.length
+      ? ('<span class="f-label">已组合</span>'
+         + chips.map(function(c){ return '<button class="fchip" data-clearf="' + c.k + '" title="点击去掉该条件">' + esc(c.t) + '<span class="x">×</span></button>'; }).join("")
+         + '<button class="fchip clear" data-clearf="all">清空全部</button>')
+      : "";
+  })();
   if (!PUSH_GROUPS.length){
     stats.innerHTML = ""; info.textContent = "";
-    box.innerHTML = anyFilterNow
+    box.innerHTML = anyFilter
       ? '<div class="empty">没有符合当前筛选条件的推送记录</div>'
       : '<div class="empty">暂无萤石推送记录（webhook 还没收到过萤石推送）</div>';
     return;
@@ -672,43 +681,17 @@ function renderPushGroups(){
 
   // 四个筛选(类型/设备/是否有人/时间)已全部在服务端完成, 这里直接渲染当前页, 不再本地二次筛选
   var groups = PUSH_GROUPS;
-  var filtered = [];
-  for (var i = 0; i < groups.length; i++){
-    filtered.push({ g: groups[i], items: groups[i].items });
-  }
-  var anyFilter = PUSH_FILTER.person !== "all" || PUSH_FILTER.day !== "all" || PUSH_FILTER.dev !== "all" || PUSH_FILTER.type !== "all";
   var allLogs = PUSH_GRAND || PUSH_TOTAL;
   var PUSH_TYPE_LABEL = { human: "人形检测", motiondetect: "移动侦测", pet: "宠物侦测", vehicle: "车辆检测" };
   var typeLabel = PUSH_TYPE_LABEL[PUSH_FILTER.type] || "";
-  var typeTag = (PUSH_FILTER.type !== "all" ? (" · " + typeLabel) : "") + (PUSH_FILTER.dev !== "all" ? (" · " + PUSH_FILTER.dev) : "") + (PUSH_FILTER.day !== "all" ? (" · " + (PUSH_FILTER.day === "today" ? "今日" : (PUSH_FILTER.day === "yesterday" ? "昨日" : "前天及更早"))) : "") + (PUSH_FILTER.person !== "all" ? (" · " + (PUSH_FILTER.person === "yes" ? "有人" : (PUSH_FILTER.person === "no" ? "无人" : "无AI结论"))) : "");
+  var DAY_TAG = { today: "今日", yesterday: "昨日", before: "前天及更早" };
+  var dayTag = PUSH_FILTER.day !== "all" ? (PUSH_FILTER.day.indexOf("date:") === 0 ? PUSH_FILTER.day.slice(5) : (DAY_TAG[PUSH_FILTER.day] || PUSH_FILTER.day)) : "";
+  var typeTag = (PUSH_FILTER.type !== "all" ? (" · " + typeLabel) : "") + (PUSH_FILTER.dev !== "all" ? (" · " + PUSH_FILTER.dev) : "") + (dayTag ? (" · " + dayTag) : "") + (PUSH_FILTER.person !== "all" ? (" · " + ({yes:"有人",no:"无人",none:"无AI结论"})[PUSH_FILTER.person]) : "");
   info.textContent = anyFilter
     ? ("筛选出 " + PUSH_TOTAL + " / 全量 " + allLogs + " 条 · 第 " + PUSH_PAGE.page + " / " + PUSH_PAGE.totalPages + " 页" + typeTag)
     : ("共 " + PUSH_TOTAL + " 条 · 第 " + PUSH_PAGE.page + " / " + PUSH_PAGE.totalPages + " 页" + typeTag);
 
-  // 当前组合条件一览(2026-10-08): 四个筛选可任意组合, 光靠下面那行小字看不出"到底筛了什么"
-  // (尤其筛了设备时看不出), 所以把每个非"全部"的条件做成可单独点掉的小标签。
-  var activeBox = $("pushActiveFilter");
-  if (activeBox) {
-    var DAY_LABEL = { today: "今日", yesterday: "昨日", before: "前天及更早" };
-    var PER_LABEL = { yes: "有人", no: "无人", none: "无AI结论" };
-    // 设备可能是村名也可能是 serial —— serial 时显示设备名(去掉村前缀)更好认
-    var devLabel = "";
-    if (PUSH_FILTER.dev !== "all") {
-      var devBtn = document.querySelector('[data-devf="' + PUSH_FILTER.dev + '"]');
-      devLabel = devBtn ? devBtn.textContent : PUSH_FILTER.dev;
-    }
-    var chips = [];
-    if (PUSH_FILTER.day !== "all")   chips.push({ k: "day",     t: "时间:" + DAY_LABEL[PUSH_FILTER.day] });
-    if (PUSH_FILTER.type !== "all")  chips.push({ k: "type",    t: typeLabel });
-    if (PUSH_FILTER.dev !== "all")   chips.push({ k: "device",  t: "设备:" + devLabel });
-    if (PUSH_FILTER.person !== "all")chips.push({ k: "person",  t: PER_LABEL[PUSH_FILTER.person] });
-    activeBox.innerHTML = chips.length
-      ? ('<span class="f-label">已组合</span>' + chips.map(function(c){
-          return '<button class="fchip" data-clearf="' + c.k + '" title="点击去掉该条件">'
-               + esc(c.t) + '<span class="x">×</span></button>';
-        }).join("") + '<button class="fchip clear" data-clearf="all">清空全部</button>')
-      : "";
-  }
+  // 「已组合」chip 组已在函数开头统一渲染(空态/非空态共用一份实现), 这里不再重复渲染。
 
   // 统计(基于筛选后的当前页数据)
   var deviceCount, deviceSet = {};
@@ -747,12 +730,16 @@ function renderPushGroups(){
       : '');
 
   // 分组渲染(只渲染有可见行的分组; 筛选后全空给出提示)
-  var shownGroups = filtered.filter(function(x){ return x.items.length; });
+  // 注意: 原来这里还有个 `filtered` 数组(把 groups 逐个包成 {g,items}), 但 2026-10-08 合并
+  // 「已组合」chip 双份实现时把它连同声明一起删掉了, 下面两处引用就成了
+  // `ReferenceError: filtered is not defined` → 推送记录页整页"加载失败"(2026-10-09 报错)。
+  // `groups` 本身就是 {type,name,count,rawCount,items} 结构, 直接用即可, 不需要包装层。
+  var shownGroups = groups.filter(function(x){ return x.items.length; });
   if (!shownGroups.length){ box.innerHTML = '<div class="empty">本页没有符合筛选条件的推送记录</div>' + pagerHtml(); return; }
   var out = "";
   PUSH_ITEMS = []; // 每次重渲染重建, 行内 onclick 引用下标
   for (var i = 0; i < shownGroups.length; i++){
-    var g = shownGroups[i].g, items = shownGroups[i].items;
+    var g = shownGroups[i], items = shownGroups[i].items;
     out += '<div class="push-group">' +
       '<div class="push-group-head" onclick="this.parentNode.classList.toggle(\'collapsed\')">' +
         '<span class="toggle">▼</span>' +
@@ -807,6 +794,8 @@ document.getElementById("pushFilters").addEventListener("click", function(e){
   if (clear){
     if (clear === "all"){ PUSH_FILTER.person = "all"; PUSH_FILTER.day = "all"; PUSH_FILTER.type = "all"; PUSH_FILTER.dev = "all"; }
     else PUSH_FILTER[clear] = "all";
+    // 时间条件回到"全部"时, 日期选择器也要清空, 否则输入框还显示着已失效的日期
+    if (PUSH_FILTER.day === "all"){ var dp0 = $("pushDatePick"); if (dp0) dp0.value = ""; }
     // 同步按钮高亮状态, 否则按钮还亮着而条件已清 —— 状态与 UI 不一致
     var attrs = { pf: "person", df: "day", tf: "type", devf: "dev" };
     for (var ak in attrs){
@@ -827,6 +816,7 @@ document.getElementById("pushFilters").addEventListener("click", function(e){
   }
   if (df){
     PUSH_FILTER.day = df;
+    var dp1 = $("pushDatePick"); if (dp1) dp1.value = ""; // 点快捷按钮时清掉日期选择(与有人记录页一致)
     Array.prototype.forEach.call(this.querySelectorAll("[data-df]"), function(x){ x.classList.toggle("on", x === b); });
     changed = true;
   }
@@ -842,6 +832,16 @@ document.getElementById("pushFilters").addEventListener("click", function(e){
   }
   // 筛选变了 → 回第 1 页重新向后端请求(总数/页码都由服务端算, 本地无从得知)
   if (changed) loadPushLog(1);
+});
+
+// 推送记录日期选择器: 选任意日期, 看当天的推送记录(与有人记录页 #personDatePick 一致)
+$("pushDatePick").addEventListener("change", function(){
+  if (this.value) {
+    PUSH_FILTER.day = "date:" + this.value; // date:YYYY-MM-DD
+    // 取消快捷按钮高亮(现在是自定义日期模式)
+    Array.prototype.forEach.call(document.querySelectorAll("#pushFilters [data-df]"), function(x){ x.classList.remove("on"); });
+    loadPushLog(1);
+  }
 });
 
 // ---- 有人记录标签页：仅显示 person=true 的记录 ----
@@ -1272,8 +1272,19 @@ function renderCards(events){
     mc.setAttribute("data-file", fileEnc);
     mc.setAttribute("data-key", evKey);
     mc.setAttribute("data-ts", String(e.ts || ""));
-    mc.setAttribute("data-serial", esc(e.serial));
+    // setAttribute 走 DOM API, **不能套 esc()** —— 转义后读出来是 "&amp;" 实体,
+    // cardLocator 拿它去匹配 events.json 里的 serial 会失败(删除时匹配不到记录)
+    mc.setAttribute("data-serial", e.serial == null ? "" : String(e.serial));
     mc.classList.add("card");
+    // 批量选择复选框(2026-10-08 补): 之前只创建了删除按钮, .select-box 从未被创建 →
+    // 事件委托里 `t.classList.contains("select-box")` 恒 false → selectedKeys 永远空 →
+    // 整条 bulk-bar 工具栏(全选/取消全选/分析选中/删除选中)永远不显示, 4 个按钮点不到。
+    var selBox = document.createElement("input");
+    selBox.type = "checkbox";
+    selBox.className = "select-box";
+    selBox.setAttribute("data-key", evKey);
+    if (selectedKeys.has(evKey)) selBox.checked = true;
+    mc.appendChild(selBox);
     // 删除按钮
     var delBtn = document.createElement("button");
     delBtn.className = "del-btn";
@@ -1368,7 +1379,9 @@ Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(b){
   b.addEventListener("click", function(){ switchTab(b.getAttribute("data-tab")); });
 });
 $("btnRefreshPush").addEventListener("click", function(){ loadPushLog(1); });
-$("btnRefreshPerson").addEventListener("click", loadPersonRecords);
+// 必须包一层: 直接传 loadPersonRecords 会把 click Event 当成 append=true,
+  // 表现为"点刷新变成了往下翻页", 且 hasMore 为 false 时点了完全没反应
+  $("btnRefreshPerson").addEventListener("click", function(){ loadPersonRecords(); });
 $("btnAnalyze").addEventListener("click", analyze);
 $("btnAlarm").addEventListener("click", checkAlarms);
 $("btnToday").addEventListener("click", checkTodayPerson);
@@ -1449,22 +1462,36 @@ async function analyzeSelected(){
   var tasks = cards.filter(function(card){ return decodeURIComponent(card.getAttribute("data-file") || ""); });
   if (tasks.length === 0){ btn.disabled = false; return; }
   var oldHtml = btn.textContent;
+  var failed = 0;
   for (var i = 0; i < tasks.length; i++){
     var card = tasks[i];
+    // data-serial 用 setAttribute 写入, 本身就是原值, **不能 decodeURIComponent**
     var serial = card.getAttribute("data-serial") || "";
     var file = decodeURIComponent(card.getAttribute("data-file") || "");
     if (!file) continue;
     btn.textContent = "⏳ 分析中 " + (done + 1) + "/" + tasks.length;
     try {
-      await fetch("/api/analyze?serial=" + encodeURIComponent(serial) + "&model=" + encodeURIComponent(currentModel) + "&file=" + encodeURIComponent(file));
-      done++;
-    } catch(e){ console.error("分析失败", e); done++; }
+      // ⚠️ fetch 对 4xx/5xx **不会 reject**, 必须检查 HTTP 状态和响应体里的 error,
+      // 否则 /api/analyze 返回 {error} 也照样 done++, 用户以为全部成功
+      var r = await fetch("/api/analyze?serial=" + encodeURIComponent(serial) + "&model=" + encodeURIComponent(currentModel) + "&file=" + encodeURIComponent(file));
+      var j = null;
+      try { j = await r.json(); } catch(e){ j = null; }
+      if (!r.ok || (j && j.error)) {
+        failed++;
+        console.error("分析失败", file, (j && j.error) || ("HTTP " + r.status));
+      } else done++;
+    } catch(e){
+      failed++; done++; // 网络层异常(真抛错)也算一个已处理
+      console.error("分析请求异常", file, e);
+    }
   }
-  btn.textContent = oldHtml;
+  btn.textContent = failed > 0 ? ("完成 " + done + "，失败 " + failed) : oldHtml;
   btn.disabled = false;
   selectedKeys.clear();
   updateBulkBar();
   loadHistory(true);
+  // 让"完成 N，失败 M"停留一下再恢复原样, 否则一闪而过看不到
+  if (failed > 0) setTimeout(function(){ btn.textContent = oldHtml; }, 4000);
 }
 $("btnAnalyzeSel").addEventListener("click", analyzeSelected);
 

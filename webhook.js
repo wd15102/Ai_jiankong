@@ -14,12 +14,13 @@ const { analyzeImage } = require("./lib/ai"); // AI 判读: 复用 lib/ai.js(含
 const motiondetect = require("./lib/motiondetect"); // 本地补充人形检测(自写算法, 零 API 消耗)
 const store = require("./lib/store"); // events.json 跨进程事务存储(与 monitor/webapp 共用同一把锁)
 const hdcapture = require("./lib/hdcapture"); // 高清抓图: 主码流截帧, 失败回落原抓图接口
+const capturename = require("./lib/capturename"); // 抓图文件名: {村名}_{日期}_{序列号}[_p].jpg
 
 const ROOT = __dirname;
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "config.json"), "utf8"));
 const WX = cfg.wxServer || {};
 const PORT = WX.port || 8787;
-const VERSION = "2026-10-07.53"; // +PeopleDetectionEvent接入人形链路 +无图人形事件60秒补拍→AI→判定推送(不再盲推无图无结论)
+const VERSION = "2026-10-12.54"; // /today今日人员活动页移动端排版改版: 120px侧边小图→通宽大图(图在上/徽章+两行摘要在下), 头部补共N次/有人X次统计, 修复灯箱提示条常显悬浮问题
 // 变更历史 2026-10-07.53: +设备端人形检测第三种上报格式 PeopleDetectionEvent(ys.iot/domain=HumanBodyDetection)归一为SmartHumanDet进人形链路(payload恒为"null",事件即信号; 之前完全未处理,9月每天32~55条全浪费) +无图人形事件不盲推: 改走60秒后补拍→图回写→补跑AI→判有人/读不懂才带图推送,AI判无人只记录,补拍也失败按旧行为无图放行(修10-07 12:56无图无结论盲推)
 // 变更历史 2026-09-30.51: +车辆复核AI回答中的人形信息不再丢弃: judgePerson提取personFromVeh, 有人则按人员活动推送(标题/kw4/徽章联动), 修18:0x菜地站人整条按无人车辆丢弃的漏报
 // 变更历史 2026-09-30.50: +同活动双推送治理: 入库判重认pushed/pushPending(车辆事件person=false挡不住同人二次消息), 推送前打占位/失败清除 —— 修15:52双推占满限流窗口致16:11真实事件被拦
@@ -196,6 +197,9 @@ process.on("exit", function () { saveApiStats(); });
 // motion 图仍会被垫图逻辑捡走: 人形标签消息自带截图为空时, 会从这里取帧并"搬进"主目录长期留存。
 const CAPTURE_DIR = path.join(ROOT, "captures");
 const MOTION_DIR = path.join(CAPTURE_DIR, "motion");
+// 推送记录页专用图目录(2026-10-24 东哥要求: 推送记录的图片单独一个文件夹, 永久保留):
+// 萤石推送报文自带的截图下载到这里, 与 captures/(有人记录/看板用事件图) 分开存放。
+const PUSH_DIR = path.join(CAPTURE_DIR, "push");
 function motionRetentionMs() {
   const h = Number((cfg.storage && cfg.storage.motionRetentionHours) || 3);
   return (h > 0 ? h : 3) * 3600e3;
@@ -292,7 +296,9 @@ function latestCapture(serial) {
   let best = null;
   try {
     for (const f of fs.readdirSync(CAPTURE_DIR)) {
-      if (f.indexOf(serial) !== 0 || f.slice(-4).toLowerCase() !== ".jpg") continue;
+      if (f.slice(-4).toLowerCase() !== ".jpg") continue;
+      const _m = capturename.parseCaptureName(f);
+      if (!_m || _m.serial !== serial) continue;
       const p = path.join(CAPTURE_DIR, f);
       const st = fs.statSync(p);
       if (!best || st.mtimeMs > best.mtimeMs) best = { file: p, mtimeMs: st.mtimeMs };
@@ -434,22 +440,58 @@ function logPush(entry) {
     let arr = [];
     try { arr = JSON.parse(fs.readFileSync(PUSH_LOG, "utf8")); if (!Array.isArray(arr)) arr = []; } catch (e) {}
     arr.push(entry);
-    // 默认不裁剪: 保留全部推送历史, 磁盘满了由用户自行处理。
-    // 需要主动限制时, 在 config.json 的 storage.pushLogRetention 填正整数条数(0/未填 = 不限)。
+    // 裁剪条数: config.json 的 storage.pushLogRetention(正整数; 0/未填 = 不限制)。
+    // **必须配**(2026-10-08): 不限制时实测已涨到 24.4MB/19863 条, 且每条推送都要
+    // readFileSync+parse(135ms)+stringify(86ms)+write 整份重写 → **单条阻塞事件循环 400ms+**,
+    // 推送洪峰期会把 /health /today /detail 等页面全部拖慢。
     const keep = Number((cfg.storage && cfg.storage.pushLogRetention));
     if (keep > 0) arr = arr.slice(-keep);
-    // **原子写(2026-10-08)**: 原来是 writeFileSync 整份直接覆盖, 文件已 4.7MB+,
-    // 写入窗口几十毫秒内 webapp/monitor 会读到**被截断的 JSON** → 推送记录页整页空白(实测撞到)。
-    // 改成: 先写 .tmp 再 rename(rename 在同一卷上是原子操作), 顺便留一份 .bak 供读取侧兜底。
-    // 4.7MB 每次全量重写本身也偏重 —— 若日志持续膨胀, 下一步应改成分片(push_log.0.json/.1.json)。
+    // **原子写**(2026-10-08): 原来是 writeFileSync 整份直接覆盖, 写入窗口内webapp/monitor
+    // 会读到**被截断的 JSON** → 推送记录页瞬间整页空白(实测撞到两次)。
+    // 改成「写 .tmp → rename」: 同卷 rename 是原子操作, 读方只会看到旧或新完整内容。
+    //
+    // 注(2026-10-08 二修): 早先版本这里还有一句 `copyFileSync(PUSH_LOG, bak)` 每条全量拷一份,
+    // 那纯属浪费 —— rename 已保证原子性, .bak 没有读取方, 却让每条推送多一次 24MB 磁盘写入。
+    // 读取侧的兜底已由 webapp.js loadPushLog() 的 try 主文件 → try .bak 保留(读侧留着不影响写侧)。
     const tmp = PUSH_LOG + ".tmp." + process.pid;
-    const bak = PUSH_LOG + ".bak";
-    const txt = JSON.stringify(arr, null, 1);
-    fs.writeFileSync(tmp, txt);
-    try { fs.copyFileSync(PUSH_LOG, bak); } catch (eBak) { /* 首次写入时没有原文件, 正常 */ }
-    fs.renameSync(tmp, PUSH_LOG);
+    try {
+      fs.writeFileSync(tmp, JSON.stringify(arr, null, 1));
+      fs.renameSync(tmp, PUSH_LOG);
+    } catch (e2) {
+      try { fs.unlinkSync(tmp); } catch (e3) {}
+    }
   } catch (e) {}
 }
+// 推送记录页专用图: 把本次推送自带的截图复制一份到 captures/push/(永久保留),
+// 并把文件名记进 push_log 条目(picFile), 供推送记录页直接取用。
+// 与 captures/(事件图, 有人记录/看板用) / captures/motion/(3小时临时垫图) 分开存放(2026-10-24 东哥要求)。
+function savePushRecordImage(serial, tsMs, srcPath) {
+  try {
+    if (!srcPath || !fs.existsSync(srcPath)) return "";
+    var name = capturename.captureFileName(serial, tsMs || Date.now(), deviceVillage(serial), true);
+    fs.mkdirSync(PUSH_DIR, { recursive: true });
+    var dst = path.join(PUSH_DIR, name);
+    if (!fs.existsSync(dst)) fs.copyFileSync(srcPath, dst);
+    // 记进 push_log(按接收时间戳 t 匹配本条消息, 与 patchPushLog 改写 alarmType 同一口径)
+    patchPushLog(function (arr) {
+      for (var i = arr.length - 1; i >= 0; i--) {
+        var e = arr[i];
+        if (!e || !e.body) continue;
+        var body = e.body;
+        try { if (typeof body === "string") body = JSON.parse(body); if (body && body.body) body = body.body; } catch (err) {}
+        if (!body || typeof body !== "object") continue;
+        var bodySerial = String(body.devSerial || body.serial || body.deviceId || "");
+        var bodyTs = Number(e.ts) || 0;
+        if (bodySerial !== serial || Math.abs(bodyTs - t) > 5000) continue;
+        e.picFile = name;
+        return true;
+      }
+      return false;
+    });
+    return name;
+  } catch (e) { return ""; }
+}
+
 // 跨进程文件锁 + 「锁内重读最新内容再改」的 push_log.json 事务。
 // 与 lib/store.js 的 updateJson 同理: webhook/webapp/monitor 三个进程都可能访问 push_log.json,
 // 必须用文件锁防止读-改-写期间被其他进程整份覆盖。锁内重读最新内容再改, 避免基于过期快照写回。
@@ -584,7 +626,14 @@ function vehVerdictFromAi(aiTxt) {
   // 明确否认: "没有看到任何车辆"/"未见交通工具"/"未看到车辆及车型位置"/"未发现任何车辆"
   // (2026-09-29 修复: 否定词表缺"未看到/未发现/无", 车辆复核prompt的否定回答"画面中未看到车辆"
   //  会被下面的 VEH_KW 整篇扫描误判成"yes" -> AI说没车却推"检测到车辆")
-  const NEG = /(没有|未见|未出现|未看到|未发现|无明显|不存在|无)[^。；\n]{0,10}(车辆|车子|汽车|轿车|面包车|货车|三轮车|摩托车|电动车|交通工具)/;
+  const NEG = /(没有|未见|未出现|未看到|未发现|无明显|不存在|无[^。；\n]{0,4}异常)[^。；\n]{0,10}(车辆|车子|汽车|轿车|面包车|货车|三轮车|摩托车|电动车|交通工具)/;
+  // ⚠️ 「不确定」必须**优先于明确否认**(2026-10-08 修, 漏报路径):
+  // 否定词表末尾那个光杆 `无` 加上 {0,10} 宽窗口, 会把「无法确定是否有车辆」「无法判断是否有
+  // 车辆经过」「因遮挡无法确认车辆情况」全判成"明确没车" → 直接拦掉推送。
+  // 实测这3 句旧正则 NEG 全 = T → verdict "no"。而画面暗/逆光/遮挡恰恰是真实车辆最容易漏掉的场景,
+  // 属于"不确定就不拦(放行)"的设计意图(webhook 注释里明确写了"不确定不拦防漏报")。
+  // 修法: 把"不确定"单独识别, 优先级高于 AFF/NEG —— 它表达的是"看不清", 不是"没有"。
+  const UNSURE = /(无法|未能|不能|难以|看不清|看不太清|分辨不出|不能确定|不能判断|不确定|无法确定|无法判断|无法确认|不能确认)/;
   // 肯定量词/姿态: "有一辆黑色摩托车"/"停放着一辆三轮车"/"骑着电动车" —— 带量词或姿态动词的
   // 具体车型提及是**确认**, 优先级高于否定: 同一句可能两者并存("画面中有一辆黑色摩托车...未发现
   // 其他行驶中的车辆", "其他"否定的不是这辆)。刻意不含"行驶"二字, 免得把"未发现其他行驶中的车辆"
@@ -594,6 +643,9 @@ function vehVerdictFromAi(aiTxt) {
   // 前文的逐项枚举可能同时出现"没有看到人"和"发现一辆摩托车", 整篇扫描会互相干扰
   const parts = s.split(/[。；！？\n]/).map(function (x) { return x.trim(); }).filter(Boolean);
   const last = parts.length ? parts[parts.length - 1] : s;
+  // 「不确定」优先于 AFF/NEG/VEH_KW: "看不清有没有车"不是"没有车", 更不是"有车" -> 返回空串,
+  // 调用方(VEH_AI_CONFIRM 门控)按"未表态 → 放行"处理, 宁可多推一条也不漏报。
+  if (UNSURE.test(last)) return "";
   if (AFF.test(last)) return "yes";
   if (NEG.test(last)) return "no";
   if (VEH_KW.test(last)) return "yes";
@@ -714,6 +766,14 @@ async function handleEzvizPushInner(bodyRaw, headers) {
   var picUrl = String(pickStr(p, ["alarmPicUrl","picUrl","pic_url","pictureUrl"]) || "");
   if (!picUrl && Array.isArray(p.pictureList) && p.pictureList.length && p.pictureList[0].url) picUrl = String(p.pictureList[0].url);
   var textMsg = String(pickStr(p, ["content","aiResult","result","text","remark","alarmName","describe","channelName"]) || "");
+  // ⚠️ 过滤「类型名冒充结论」(2026-10-09): 上面的 pickStr 从一堆候选字段里猜文本, 萤石某些
+  // 报文那些字段装的是**英文类型名**而不是结论(如 sound_detection / intelligentDetection),
+  // 结果 ai 字段被填成 "sound_detection" → 看板上显示成「AI结论: sound_detection」(东哥截图)。
+  // 判据: 不含中文就不可能是给家人看的中文结论 → 清空, 走"(点击AI分析)"占位。
+  if (textMsg && !/[一-龥]/.test(textMsg)) {
+    console.log("[萤石推送] 报文文本字段是类型名而非结论, 忽略: " + textMsg.slice(0, 40));
+    textMsg = "";
+  }
   var typeName = ALARM_TYPE_NAMES[typeCode] || "";
   // 人形判定: 老数字码155xx + v2字符串类型(SmartHumanDet/intelligentDetection)
   var typeStr = String(typeCode || "");
@@ -742,10 +802,12 @@ async function handleEzvizPushInner(bodyRaw, headers) {
     // 不再往 captures/ 主目录堆长期无人引用的孤儿图(这是 96% 孤儿图的唯一来源)。
     if (serial && picUrl) {
       try {
-        var _fname = serial + "_p" + (ts || Date.now()) + ".jpg";
+        var _fname = capturename.captureFileName(serial, ts || Date.now(), deviceVillage(serial), true);
         fs.mkdirSync(MOTION_DIR, { recursive: true });
         await client.downloadTo(picUrl, path.join(MOTION_DIR, _fname));
         console.log("[萤石推送] 移动侦测图暂存 motion/(不进看板, " + (motionRetentionMs() / 3600e3) + "小时回收): " + _fname);
+        // 推送记录页专用图(永久保留, 不受 motion 3 小时回收影响)
+        if (savePushRecordImage(serial, ts, path.join(MOTION_DIR, _fname))) console.log("[萤石推送] 推送记录图已留存 push/: " + _fname);
         // 本地补充检测(自写算法, 零 API 消耗): 帧差+连通域+人形启发式(详见 lib/motiondetect.js)
         // 命中则升级为智能事件走完整链路(抓高清图/入库/云端AI复核/推送), 弥补设备端人形检测漏检
         if (LOCAL_DETECT.enabled && !isQuotaExhausted()) {
@@ -824,7 +886,7 @@ async function handleEzvizPushInner(bodyRaw, headers) {
       if (nowMsCap - (_motionCool[serial] || 0) >= MOTION_CAPTURE_COOLDOWN_SEC * 1000) {
         _motionCool[serial] = nowMsCap;
         try {
-          var _fname = serial + "_" + (ts || Date.now()) + ".jpg";
+          var _fname = capturename.captureFileName(serial, ts || Date.now(), deviceVillage(serial), false);
           fs.mkdirSync(CAPTURE_DIR, { recursive: true });
           await hdcapture.captureHD(client, serial, path.join(CAPTURE_DIR, _fname));
           console.log("[萤石推送] 移动侦测无截图, 抓图: " + _fname);
@@ -872,11 +934,11 @@ async function handleEzvizPushInner(bodyRaw, headers) {
       } catch (eM1) {}
     }
     if (!fname && picUrl) {
-      fname = serial + "_p" + (ts || Date.now()) + ".jpg";
+      fname = capturename.captureFileName(serial, ts || Date.now(), deviceVillage(serial), true);
       // 同一活动多条消息可能携带相同报警时间 → 文件名相同: 已存在则加后缀避免共用同一文件
       // (两条事件共用一个 file 会让 analyzeAndStore 只回写先匹配到的那条, 另一条的 ai 永远是占位)
       if (fs.existsSync(path.join(ROOT, "captures", fname))) {
-        fname = serial + "_p" + (ts || Date.now()) + "_" + Date.now() + ".jpg";
+        fname = capturename.captureFileName(serial, ts || Date.now(), deviceVillage(serial), true).replace(/\.jpg$/, "_" + Date.now() + ".jpg");
       }
       try {
         await client.downloadTo(picUrl, path.join(ROOT, "captures", fname));
@@ -889,13 +951,15 @@ async function handleEzvizPushInner(bodyRaw, headers) {
           fname = "";
         } else {
           console.log("[萤石推送] 报警自带截图: " + fname);
+          // 推送记录页专用图(永久保留): 复制一份到 captures/push/
+          if (savePushRecordImage(serial, ts, path.join(ROOT, "captures", fname))) console.log("[萤石推送] 推送记录图已留存 push/: " + fname);
         }
       }
       catch (e) { console.log("[萤石推送] 截图下载失败, 转高清截帧: " + e.message); fname = ""; }
     }
     if (!fname) {
       try {
-        fname = serial + "_" + Date.now() + ".jpg";
+        fname = capturename.captureFileName(serial, Date.now(), deviceVillage(serial), false);
         await hdcapture.captureHD(client, serial, path.join(ROOT, "captures", fname));
         console.log("[萤石推送] 高清截帧: " + fname);
       } catch (e2) {
@@ -915,8 +979,10 @@ async function handleEzvizPushInner(bodyRaw, headers) {
           let files;
           try { files = await fs.promises.readdir(src.d); } catch (e) { continue; }
           for (const f of files) {
-            if (f.indexOf(serial + "_p") !== 0 || f.slice(-4) !== ".jpg") continue;
-            var fts = Number(f.slice(serial.length + 2, -4));
+            if (f.slice(-4) !== ".jpg") continue;
+            var _m = capturename.parseCaptureName(f);
+            if (!_m || _m.serial !== serial) continue;
+            var fts = _m.t;
             if (isFinite(fts) && fts <= evTsRef + 60e3 && evTsRef - fts < 120e3) cands.push({ f: f, t: fts, motion: src.motion });
           }
         }
@@ -1330,7 +1396,7 @@ function scheduleNoPicRecapture(serial, evTs, devName) {
         fname2 = rec.file;
         console.log("[补拍] 事件已有图(同活动消息补上), 直接补跑AI: " + devName + " " + fname2);
       } else {
-        fname2 = serial + "_" + Date.now() + ".jpg";
+        fname2 = capturename.captureFileName(serial, Date.now(), deviceVillage(serial), false);
         await hdcapture.captureHD(client, serial, path.join(ROOT, "captures", fname2));
         const w = await mutateEvents(function (arr) {
           const t = arr.find(function (e) {
@@ -2131,21 +2197,20 @@ const TODAY_PAGE_HTML = "<!doctype html><html><head><meta charset=\"utf-8\">" +
   ".tags{display:flex;gap:6px;margin-top:8px}" +
   ".tags a{display:inline-block;padding:4px 12px;border-radius:14px;font-size:12px;font-weight:500;text-decoration:none;color:#9aa0a6;background:#23262d;border:1px solid transparent}" +
   ".tags a.on{color:#8ab4f8;background:#1a3a5c;border-color:#3a6a9c}" +
-  ".card{display:flex;gap:10px;margin:10px 12px;padding:10px;background:#171a21;border-radius:12px;align-items:flex-start}" +
-  ".card .ci{flex:1;min-width:0}" +
-  ".card .thumb{flex-shrink:0;width:120px;height:80px;border-radius:6px;overflow:hidden;background:#0a0a0a;cursor:zoom-in;position:relative}" +
-  ".card .thumb img{width:100%;height:100%;object-fit:cover;display:block}" +
-  ".card .thumb .play-btn{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:24px;opacity:.7}" +
-  ".row{display:flex;justify-content:space-between;margin-bottom:2px;font-size:13px}" +
-  ".tm{color:#8ab4f8;font-weight:600}.dev{color:#9aa0a6}" +
-  ".row2{display:flex;align-items:center;gap:6px;margin-top:4px;min-width:0}" +
-  ".vd{flex-shrink:0;font-size:11px;font-weight:600;padding:1px 8px;border-radius:9px}" +
+  ".card{margin:12px;padding:12px;background:#171a21;border-radius:14px}" +
+  ".card .thumb{position:relative;width:100%;line-height:0;min-height:100px;border-radius:10px;overflow:hidden;background:#0a0a0a;cursor:zoom-in}" +
+  ".card .thumb img{width:100%;height:auto;display:block}" +
+  ".card .thumb .zi{position:absolute;right:8px;bottom:8px;font-size:10px;color:#fff;background:rgba(0,0,0,.5);border-radius:8px;padding:2px 8px;pointer-events:none}" +
+  ".row{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;font-size:13px}" +
+  ".tm{color:#8ab4f8;font-weight:600;font-size:15px}.dev{color:#9aa0a6;font-size:12px;text-align:right;margin-left:8px}" +
+  ".row2{display:flex;align-items:center;gap:6px;margin-top:10px;min-width:0}" +
+  ".vd{flex-shrink:0;font-size:12px;font-weight:600;padding:2px 10px;border-radius:10px}" +
   ".vd-p{color:#ff6b6b;background:rgba(255,107,107,.16)}" +
   ".vd-n{color:#51cf66;background:rgba(81,207,66,.14)}" +
-  ".brief{flex:1;min-width:0;font-size:12px;color:#cfd4da;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}" +
+  ".brief{font-size:12px;line-height:1.55;color:#cfd4da;margin-top:8px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}" +
   ".src{flex-shrink:0;font-size:10px;padding:1px 6px;border-radius:8px;color:#8ab4f8;background:rgba(138,180,248,.12);border:1px solid rgba(138,180,248,.25)}" +
   ".src-a{color:#ffa657;background:rgba(255,166,87,.1);border-color:rgba(255,166,87,.3)}" +
-  ".lb{position:fixed;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.96);z-index:99;display:none;align-items:center;justify-content:center;touch-action:none}.lb.show{display:flex}.lb img{max-width:100%;max-height:100%;-webkit-user-drag:none;user-select:none;transition:transform .15s ease}.lb-x{position:fixed;top:12px;right:14px;width:38px;height:38px;border-radius:19px;background:rgba(255,255,255,.18);color:#fff;font-size:22px;text-align:center;line-height:38px;z-index:100;cursor:pointer}.lb-t{position:fixed;left:0;right:0;bottom:16px;text-align:center;color:#fff;font-size:12px;opacity:.85;z-index:100}" +
+  ".lb{position:fixed;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.96);z-index:99;display:none;align-items:center;justify-content:center;touch-action:none}.lb.show{display:flex}.lb img{max-width:100%;max-height:100%;-webkit-user-drag:none;user-select:none;transition:transform .15s ease}.lb-x{position:fixed;top:12px;right:14px;width:38px;height:38px;border-radius:19px;background:rgba(255,255,255,.18);color:#fff;font-size:22px;text-align:center;line-height:38px;z-index:100;cursor:pointer}.lb-t{display:none;position:fixed;left:0;right:0;bottom:16px;text-align:center;color:#fff;font-size:12px;opacity:.85;z-index:100}.lb-t.show{display:block}" +
   "</style></head><body>" +
   "<header>📋 今日人员活动<div class=\"meta\" id=\"sub\">加载中...</div>" +
   "<div class=\"tags\"><a href=\"?\" class=\"on\" id=\"tagAll\">全部</a><a href=\"?village=双溪村\" id=\"tagSX\">双溪村</a><a href=\"?village=木山村\" id=\"tagMS\">木山村</a></div></header>" +
@@ -2157,24 +2222,24 @@ const TODAY_PAGE_HTML = "<!doctype html><html><head><meta charset=\"utf-8\">" +
   "fetch('/api/today-events'+(qp.length?'?'+qp.join('&'):'')).then(function(r){return r.json()}).then(function(j){" +
   "if(qVillage){document.querySelector('header').childNodes[0].nodeValue='📋 今日人员活动·'+qVillage}" +
   "if(j.devName){document.querySelector('header').childNodes[0].nodeValue='📋 '+(j.isToday===false?'昨日':'今日')+'人员活动·'+j.devName}" +
-  "var sub0=document.getElementById('sub');if(j.date){sub0.textContent='📅 '+j.date+(j.isToday===false?'(回退显示)':'')}" +
+  "var sub0=document.getElementById('sub');if(j.date){var _pc=0;(j.items||[]).forEach(function(x){if(x.verdict==='有人')_pc++});sub0.textContent='📅 '+j.date+(j.isToday===false?'(回退显示)':'')+' · 共'+(j.count||0)+'次 · 有人'+_pc+'次'}" +
   "var L=document.getElementById('list');" +
   "if(!j.count){var e0=document.createElement('div');e0.className='card';e0.textContent='📭 今天暂无人员活动，一切平安 ✅ 📅(历史记录请在电脑看板查看)';L.appendChild(e0);return}" +
   "j.items.forEach(function(it){var d=document.createElement('div');d.className='card';" +
-  "var ci=document.createElement('div');ci.className='ci';" +
   "var r1=document.createElement('div');r1.className='row';" +
   "r1.innerHTML='<span class=tm>⏰ '+it.hhmm+'</span><span class=dev>'+it.dev+'</span>';" +
-  "ci.appendChild(r1);" +
+  "d.appendChild(r1);" +
+  "if(it.pic||it.picEz){var th=document.createElement('div');th.className='thumb';" +
+  "var im=new Image();im.decoding='async';im.loading='lazy';im.alt='监控截图';th.appendChild(im);" +
+  "im.onerror=function(){if(it.picThumb&&it.pic&&im.src.indexOf(it.pic)>=0&&it.picThumb!==it.pic){im.src=it.picThumb}else if(it.picEz&&im.src!==it.picEz){im.src=it.picEz}else{th.textContent='⚠️';th.style.cssText='color:#5f6368;font-size:12px;display:flex;align-items:center;justify-content:center'}};" +
+  "im.onclick=function(ev){ev.stopPropagation();openLB(it.pic||it.picEz)};" +
+  "im.src=it.picThumb||it.pic||it.picEz;" +
+  "var zi=document.createElement('span');zi.className='zi';zi.textContent='🔍 查看大图';th.appendChild(zi);d.appendChild(th)}" +
   "var r2=document.createElement('div');r2.className='row2';" +
   "if(it.verdict){var vb=document.createElement('span');vb.className='vd '+(it.verdict==='有人'?'vd-p':'vd-n');vb.textContent=it.verdict;r2.appendChild(vb)}" +
   "if(it.source){var sb=document.createElement('span');sb.className='src '+(it.source==='算法'?'src-a':'');sb.textContent=it.source;r2.appendChild(sb)}" +
-  "var br=document.createElement('span');br.className='brief';if(it.brief){br.textContent=it.brief}else{br.textContent='暂无AI判读';br.style.color='#5f6368'}r2.appendChild(br);" +
-  "ci.appendChild(r2);d.appendChild(ci);" +
-  "if(it.pic||it.picEz){var th=document.createElement('div');th.className='thumb';" +
-  "var im=new Image();im.decoding='async';im.alt='监控截图';th.appendChild(im);" +
-  "im.onerror=function(){if(it.picThumb&&it.pic&&im.src.indexOf(it.pic)>=0&&it.picThumb!==it.pic){im.src=it.picThumb}else if(it.picEz&&im.src!==it.picEz){im.src=it.picEz}else{th.textContent='⚠️';th.style.cssText='color:#5f6368;font-size:12px;display:flex;align-items:center;justify-content:center'}};" +
-  "im.onclick=function(ev){ev.stopPropagation();openLB(it.pic||it.picEz)};" +
-  "im.src=it.picThumb||it.pic||it.picEz;d.appendChild(th)}" +
+  "d.appendChild(r2);" +
+  "var br=document.createElement('div');br.className='brief';if(it.brief){br.textContent=it.brief}else{br.textContent='暂无AI判读';br.style.color='#5f6368'}d.appendChild(br);" +
   "L.appendChild(d)});" +
   "var v=qVillage||'all';var ta=document.getElementById('tagAll');var ts=document.getElementById('tagSX');var tm=document.getElementById('tagMS');" +
   "if(v==='all')ta.classList.add('on');else if(v==='双溪村')ts.classList.add('on');else if(v==='木山村')tm.classList.add('on');" +
@@ -2202,6 +2267,9 @@ const HISTORY_PAGE_HTML = "<!doctype html><html><head><meta charset=\"utf-8\">" 
   ".bar{display:flex;gap:8px;padding:10px 12px 0}" +
   ".bar button{flex:1;background:#23262d;color:#9aa0a6;border:0;border-radius:20px;padding:8px 0;font-size:14px}" +
   ".bar button.on{background:#1a3a5c;color:#8ab4f8;font-weight:600}" +
+  ".vbar{display:flex;gap:8px;padding:8px 12px 0}" +
+  ".vbar button{flex:1;background:#23262d;color:#9aa0a6;border:0;border-radius:20px;padding:7px 0;font-size:13px}" +
+  ".vbar button.on{background:#1a3a5c;color:#8ab4f8;font-weight:600}" +
   ".sum{font-size:13px;color:#9aa0a6;padding:10px 14px 2px}" +
   ".card{margin:10px 12px;padding:12px;background:#171a21;border-radius:12px}" +
   ".card img{width:100%;border-radius:8px;display:block;background:#000;min-height:120px;margin-top:6px}" +
@@ -2213,11 +2281,12 @@ const HISTORY_PAGE_HTML = "<!doctype html><html><head><meta charset=\"utf-8\">" 
   ".rp{font-size:14px;line-height:1.8;color:#cfd4da}" +
   ".rp b{color:#8ab4f8}" +
   ".empty{text-align:center;color:#5f6368;padding:40px 20px;font-size:14px;line-height:1.8}" +
-  ".lb{position:fixed;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.96);z-index:99;display:none;align-items:center;justify-content:center;touch-action:none}.lb.show{display:flex}.lb img{max-width:100%;max-height:100%;-webkit-user-drag:none;user-select:none;transition:transform .15s ease}.lb-x{position:fixed;top:12px;right:14px;width:38px;height:38px;border-radius:19px;background:rgba(255,255,255,.18);color:#fff;font-size:22px;text-align:center;line-height:38px;z-index:100;cursor:pointer}.lb-t{position:fixed;left:0;right:0;bottom:16px;text-align:center;color:#fff;font-size:12px;opacity:.85;z-index:100}" +
+  ".lb{position:fixed;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.96);z-index:99;display:none;align-items:center;justify-content:center;touch-action:none}.lb.show{display:flex}.lb img{max-width:100%;max-height:100%;-webkit-user-drag:none;user-select:none;transition:transform .15s ease}.lb-x{position:fixed;top:12px;right:14px;width:38px;height:38px;border-radius:19px;background:rgba(255,255,255,.18);color:#fff;font-size:22px;text-align:center;line-height:38px;z-index:100;cursor:pointer}.lb-t{display:none;position:fixed;left:0;right:0;bottom:16px;text-align:center;color:#fff;font-size:12px;opacity:.85;z-index:100}.lb-t.show{display:block}" +
   "</style></head><body>" +
   "<header>📜 历史记录" +
   "<div class=\"nav\"><button id=\"prev\">‹</button><select id=\"day\"></select><button id=\"next\">›</button></div></header>" +
   "<div class=\"bar\"><button id=\"bP\" class=\"on\">👤 有人记录</button><button id=\"bA\">📋 全部记录</button><button id=\"bR\">📊 日报</button></div>" +
+  "<div class=\"vbar\"><button id=\"vA\" class=\"on\">🏘 全部</button><button id=\"vS\">🏡 双溪村</button><button id=\"vM\">🚪 木山村</button></div>" +
   "<div class=\"sum\" id=\"sum\">加载中...</div><div id=\"list\"></div>" +
   "<div id='lb' class='lb'><img id='lbImg' src='' alt=''></div><div id='lbX' class='lb-x'>&#215;</div><div id='lbT' class='lb-t'>双击放大 &#183; 双指捏合缩放 &#183; 长按可保存</div>" +
   "<scr" + "ipt>" +
@@ -2230,6 +2299,9 @@ const HISTORY_PAGE_HTML = "<!doctype html><html><head><meta charset=\"utf-8\">" 
   "function mkD(s){var p=s.split('-');return new Date(Number(p[0]),Number(p[1])-1,Number(p[2])).getTime()}" +
   "function setMode(m){mode=m;el('bP').className=(m==='P'?'on':'');el('bA').className=(m==='A'?'on':'');el('bR').className=(m==='R'?'on':'');render()}" +
   "el('bP').onclick=function(){setMode('P')};el('bA').onclick=function(){setMode('A')};el('bR').onclick=function(){setMode('R')};" +
+  "function setVillage(v){qVillage=v;el('vA').className=(v===''?'on':'');el('vS').className=(v==='双溪村'?'on':'');el('vM').className=(v==='木山村'?'on':'');render()}" +
+  "el('vA').onclick=function(){setVillage('')};el('vS').onclick=function(){setVillage('双溪村')};el('vM').onclick=function(){setVillage('木山村')};" +
+  "el('vA').className=(qVillage===''?'on':'');el('vS').className=(qVillage==='双溪村'?'on':'');el('vM').className=(qVillage==='木山村'?'on':'');" +
   "el('prev').onclick=function(){shiftDay(-1)};el('next').onclick=function(){shiftDay(1)};" +
   "el('day').onchange=function(){cur=this.value;render()};" +
   "function shiftDay(d){var sel=el('day');var base=cur||todayStr();var p=base.split('-');var dt=new Date(Number(p[0]),Number(p[1])-1,Number(p[2]));dt.setDate(dt.getDate()+d);" +
@@ -2319,13 +2391,13 @@ async function refreshTodayEvents() {
         // 报警时刻的真实场景 —— 补录的多是几分钟/几小时前的报警, captureHD 抓到的是"查询时刻"
         // 的画面, 既白烧拉流额度又图文不符(2026-09-29 审查)。无自带截图才抓现况兜底。
         if (picUrl) {
-          fname = dev.serial + "_p" + ts + ".jpg";
+          fname = capturename.captureFileName(dev.serial, ts, deviceVillage(dev.serial), true);
           try { await client.downloadTo(picUrl, path.join(ROOT, "captures", fname)); }
           catch (e1) { fname = ""; }
         }
         if (!fname) {
           try {
-            fname = dev.serial + "_" + Date.now() + ".jpg";
+            fname = capturename.captureFileName(dev.serial, Date.now(), deviceVillage(dev.serial), false);
             await hdcapture.captureHD(client, dev.serial, path.join(ROOT, "captures", fname));
           } catch (eHD) { fname = ""; }
         }
@@ -2417,46 +2489,6 @@ function replyNews(fromUser, toUser, articles) {
   return xml + "</Articles></xml>";
 }
 
-// 「今天有人吗」文本汇总 + 异步补发最近现场照片(微信原生图秒开)
-function buildTodayDigestReply(fromUser, toUser) {
-  try {
-    const evs = todayPersonEvents();
-    if (!evs.length) return replyText(fromUser, toUser, "📭 今天暂无人员活动，一切平安 ✅\n\n点【当前画面】可看实时截图。");
-    const n = evs.length;
-    const brief = function (e) {
-      const aiOk = e.ai && e.ai.indexOf("(") !== 0;
-      return e.timeText + " " + e.name + (aiOk ? "｜" + e.ai.replace(/\s+/g, " ").slice(0, 50) : "");
-    };
-    const seenH = {}; const withPic = [];
-    for (let i = evs.length - 1; i >= 0 && withPic.length < 3; i--) {
-      const e2 = evs[i];
-      if (!e2.file) continue;
-      try {
-        const hs = crypto.createHash("md5").update(fs.readFileSync(path.join(ROOT, "captures", e2.file))).digest("hex");
-        if (seenH[hs]) continue;
-        seenH[hs] = 1;
-      } catch (eH) {}
-      withPic.unshift(e2);
-    }
-    const pub3 = (cfg.wxTest || {}).publicBase || "";
-    const latestPic = evs.slice().reverse().find(function (e) { return e.file; });
-    const picUrl3 = latestPic && pub3 ? tokUrl(pub3 + "/captures/" + encodeURIComponent(latestPic.file)) : "";
-    const cardDesc3 = evs.slice(0, 5).map(function (e) {
-      const aiOk = e.ai && String(e.ai).indexOf("(") !== 0;
-      return "⏰ " + e.timeText + " " + e.name + (aiOk ? " · " + String(e.ai).replace(/\s+/g, " ").slice(0, 35) : "");
-    }).join("\n") + (n > 5 ? "\n... 共" + n + "次" : "") + (pub3 ? "\n\n📖 点击查看全部记录" : "");
-    setTimeout(async function () {
-      await sendCustomNews(fromUser,
-        dear(fromUser) + "📋 今日人员活动 " + n + " 次",
-        cardDesc3, picUrl3, pub3 ? tokUrl(pub3 + "/today") : picUrl3);
-    }, 300);
-    return replyText(fromUser, toUser,
-      "🔍 正在查询今天的报警记录，结果马上发你...");
-  } catch (e) {
-    return replyText(fromUser, toUser, "查询失败: " + e.message.slice(0, 50));
-  }
-}
-
 // ---------- 历史查询: 文本指令(如「查询双溪村10点左右的监控」) ----------
 // 解析查询指令 -> { village, dayOff, startTs, endTs, label }; 不匹配返回 null
 // 支持: 双溪村/木山村 + 今天/昨天/前天 + 凌晨/早上/上午/中午/下午/傍晚/晚上 + X点[半/一刻/三刻/Y分][左右] + X点到Y点
@@ -2539,7 +2571,7 @@ async function collectWindowEvents(startTs, endTs, village, serial) {
         const picUrl = String(pickStr(a, ["alarmPicUrl", "picUrl", "pictureUrl"]) || "");
         let fname = "";
         if (picUrl && downloaded < 10) { // 每次查询最多补下10张图, 防止大窗口拖慢回复
-          fname = dev.serial + "_p" + ts + ".jpg";
+          fname = capturename.captureFileName(dev.serial, ts, deviceVillage(dev.serial), true);
           try { await client.downloadTo(picUrl, path.join(ROOT, "captures", fname)); downloaded++; }
           catch (e1) { fname = ""; }
         }
@@ -2756,17 +2788,20 @@ async function fetchOpenids(forceRefresh) {
   }
 }
 // 按给定事件列表与设备标签拼装日报文案; village 传村名时链接只看该村(分组日报防越权)
-function buildDailyReportContent(evs, devLabels, village) {
+function buildDailyReportContent(evs, devLabels, village, kind) {
   const n = evs.length;
   const pub = (cfg.wxTest || {}).publicBase || "";
   // pubBase 为空(隧道未开)时不给url: 相对路径发到微信点了没反应, 文案如实说明(与实时推送同一规则)
   const todayUrl = pub ? tokUrl(pub + "/today" + (village ? ("?village=" + encodeURIComponent(village)) : "")) : "";
+  // kind: "daily"=全天日报(默认), "half"=半日报(当天 00:00-12:00)
+  const label = (kind === "half") ? "半日报" : "日报";
+  const span = (kind === "half") ? "上午(00:00-12:00)" : "全天";
   let first, remark;
   if (!n) {
-    first = "📊 老家监控日报";
-    remark = "今天平安无事 ✅ 全天无人员活动\n覆盖设备: " + devLabels.join(" / ") + (todayUrl ? "" : "\n（内网穿透未开启，详情请到电脑看板查看）");
+    first = "📊 老家监控" + label;
+    remark = "今天平安无事 ✅ " + span + "无人员活动\n覆盖设备: " + devLabels.join(" / ") + (todayUrl ? "" : "\n（内网穿透未开启，详情请到电脑看板查看）");
   } else {
-    first = "📊 老家监控日报（人员活动 " + n + " 次）";
+    first = "📊 老家监控" + label + "（人员活动 " + n + " 次）";
     const lines = evs.slice(0, 6).map(function (e) {
       const aiOk = e.ai && String(e.ai).indexOf("(") !== 0;
       const aiBrief = aiOk ? String(e.ai).replace(/\s+/g, " ").slice(0, 28) : "（AI未判读）";
@@ -2778,47 +2813,69 @@ function buildDailyReportContent(evs, devLabels, village) {
   }
   return { first: first, remark: remark, url: todayUrl };
 }
-let _dailyBusy = false;
-let _dailyRetryCount = 0; // 日报重试次数
-const DAILY_MAX_RETRIES = 5; // 最多重试5次
+let _reportBusy = { daily: false, half: false };
+let _reportRetry = { daily: 0, half: 0 };
+const REPORT_MAX_RETRIES = 5; // 最多重试5次
 
-async function maybeDailyReport() {
+// 取指定时段的人形事件: daily=当天全天(日报), half=当天 00:00-12:00(半日报)
+function reportPersonEvents(kind) {
+  const evts = loadEventsArr();
+  const hidden = hiddenSerialSet();
+  const d = new Date();
+  const midnight = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const end = (kind === "half") ? (midnight + 12 * 3600e3) : (midnight + 86400e3);
+  return evts.filter(function (e) {
+    return e.source !== "kanjia" && (e.ts || 0) >= midnight && (e.ts || 0) < end && (e.person === true || /人形检测/.test(String(e.title))) && !hidden.has(e.serial);
+  }).map(function (e) {
+    const t = new Date(e.ts || Date.now());
+    const hh = ("0" + t.getHours()).slice(-2) + ":" + ("0" + t.getMinutes()).slice(-2);
+    return { timeText: hh, name: e.name || e.serial || "", file: e.file || "", ai: String(e.ai || ""), serial: e.serial || "", provider: e.provider || "", ezvizPic: e.ezvizPic || "" };
+  }).sort(function (a, b) { return a.timeText < b.timeText ? -1 : 1; });
+}
+function todayPersonEvents() { return reportPersonEvents("daily"); }
+
+// kind: "daily"=全天日报(默认20点), "half"=半日报(默认12点, 覆盖当天 00:00-12:00)
+async function maybeReport(kind) {
   const T = cfg.wxTest || {};
-  if (T.enabled === false || T.dailyReport === false || !T.templateId) return;
+  if (T.enabled === false || !T.templateId) return;
+  if (kind === "daily" && T.dailyReport === false) return;
+  if (kind === "half" && T.halfDailyReport === false) return;
+  const label = (kind === "half") ? "半日报" : "日报";
   
   // 配额耗尽时直接跳过
   if (isQuotaExhausted()) {
-    console.log("[日报] API配额已耗尽，跳过今天日报推送");
+    console.log("[" + label + "] API配额已耗尽，跳过今天" + label + "推送");
     return;
   }
   
   const d = new Date();
-  if (d.getHours() < (T.reportHour || 20)) return;
-  const key = todayKey();
+  const hour = (kind === "half") ? (T.halfReportHour || 12) : (T.reportHour || 20);
+  if (d.getHours() < hour) return;
+  const key = todayKey() + (kind === "half" ? "#half" : "");
   let st = {};
   try { st = JSON.parse(fs.readFileSync(path.join(ROOT, "data", "daily_report.json"), "utf8")); } catch (e) {}
-  if (st.last === key || _dailyBusy) return;
+  const sentKey = (kind === "half") ? "lastHalf" : "last";
+  if (st[sentKey] === key || _reportBusy[kind]) return;
   
   // 检查重试次数
-  if (_dailyRetryCount >= DAILY_MAX_RETRIES) {
-    console.log("[日报] " + key + " 已达最大重试次数(" + DAILY_MAX_RETRIES + ")，停止重试");
+  if (_reportRetry[kind] >= REPORT_MAX_RETRIES) {
+    console.log("[" + label + "] " + key + " 已达最大重试次数(" + REPORT_MAX_RETRIES + ")，停止重试");
     return;
   }
   
-  _dailyBusy = true;
+  _reportBusy[kind] = true;
   try {
-    // 全日人形事件(已过滤隐藏设备)
-    const all = todayPersonEvents();
+    const all = reportPersonEvents(kind);
     let openids = [];
-    try { openids = await fetchOpenids(); } catch (e) { console.log("[日报] 关注者列表获取失败: " + e.message.slice(0, 60)); }
+    try { openids = await fetchOpenids(); } catch (e) { console.log("[" + label + "] 关注者列表获取失败: " + e.message.slice(0, 60)); }
     
     // token 未就绪时 openids 可能为空: 不标记已发, 下个周期自动重试(避免当天整日漏报)
     if (!openids.length) {
       if (isQuotaExhausted()) {
-        console.log("[日报] " + key + " API配额耗尽，停止重试");
+        console.log("[" + label + "] " + key + " API配额耗尽，停止重试");
       } else {
-        _dailyRetryCount++;
-        console.log("[日报] " + key + " 暂未取得关注者列表, 第" + _dailyRetryCount + "次重试");
+        _reportRetry[kind]++;
+        console.log("[" + label + "] " + key + " 暂未取得关注者列表, 第" + _reportRetry[kind] + "次重试");
       }
       return;
     }
@@ -2835,10 +2892,11 @@ async function maybeDailyReport() {
       (buckets[scope] = buckets[scope] || { ids: [], labels: deviceNamesByVillage(scope) }).ids.push(oid);
     }
     const plan = [];
+    const tplLabel = (kind === "half") ? "半日汇总" : "每日汇总";
     // 默认组: 全部设备
     if (defaultIds.length) {
-      const c = buildDailyReportContent(all, dailyReportDevices());
-      plan.push(pushTestTemplate(c.first, key, "每日汇总", c.remark, c.url, true,
+      const c = buildDailyReportContent(all, dailyReportDevices(), "", kind);
+      plan.push(pushTestTemplate(c.first, key, tplLabel, c.remark, c.url, true,
         { allowOid: function (oid) { return defaultIds.indexOf(oid) >= 0; }, dailyReport: true }));
     }
     // 按村分组: 仅该村民事件, 链接也只看该村
@@ -2846,8 +2904,8 @@ async function maybeDailyReport() {
       const b = buckets[scope];
       if (!b.ids.length) continue;
       const evsV = all.filter(function (e) { return deviceVillage(e.serial) === scope; });
-      const c = buildDailyReportContent(evsV, b.labels, scope);
-      plan.push(pushTestTemplate(c.first, key, "每日汇总", c.remark, c.url, true,
+      const c = buildDailyReportContent(evsV, b.labels, scope, kind);
+      plan.push(pushTestTemplate(c.first, key, tplLabel, c.remark, c.url, true,
         { allowOid: function (oid) { return b.ids.indexOf(oid) >= 0; }, dailyReport: true }));
     }
     const results = await Promise.all(plan);
@@ -2856,47 +2914,53 @@ async function maybeDailyReport() {
     // 全部失败(网络/token抖动): 不记账, 下个周期自动重试, 避免日报因瞬时故障整天丢失
     if (!sentAny) {
       if (isQuotaExhausted()) {
-        console.log("[日报] " + key + " API配额耗尽，停止重试");
+        console.log("[" + label + "] " + key + " API配额耗尽，停止重试");
       } else {
-        _dailyRetryCount++;
-        console.log("[日报] " + key + " 本轮推送全部失败, 第" + _dailyRetryCount + "次重试");
+        _reportRetry[kind]++;
+        console.log("[" + label + "] " + key + " 本轮推送全部失败, 第" + _reportRetry[kind] + "次重试");
       }
       return;
     }
     
     // 成功发送，重置重试计数
-    _dailyRetryCount = 0;
+    _reportRetry[kind] = 0;
     const failedGroups = results.filter(function (n) { return n === 0; }).length;
-    if (failedGroups > 0) console.log("[日报] 部分分组推送失败(" + failedGroups + "组), 已记账不再重试以免重复打扰");
-    st.last = key;
+    if (failedGroups > 0) console.log("[" + label + "] 部分分组推送失败(" + failedGroups + "组), 已记账不再重试以免重复打扰");
+    st[sentKey] = key;
     try { fs.writeFileSync(path.join(ROOT, "data", "daily_report.json"), JSON.stringify(st)); } catch (e2) {}
     // 日报快照存档: 供「历史日报」按日回查(无存档的历史日期由 buildReportForDate 从本地events重算)
-    try {
-      const snap = { date: key, total: all.length, villages: {}, devices: {}, lines: [], published: true };
-      for (const e of all) {
-        const v = deviceVillage(e.serial) || "其他";
-        snap.villages[v] = (snap.villages[v] || 0) + 1;
-        snap.devices[e.name || e.serial] = (snap.devices[e.name || e.serial] || 0) + 1;
-      }
-      snap.lines = all.slice(0, 30).map(function (e) {
-        const aiOk = e.ai && String(e.ai).indexOf("(") !== 0;
-        return (e.timeText || "") + " " + (e.name || "") + (aiOk ? "｜" + String(e.ai).replace(/\s+/g, " ").slice(0, 40) : "");
-      });
-      saveDailyReportSnapshot(key, snap);
-      console.log("[日报] 快照已存档: " + key);
-    } catch (eSnap) { console.log("[日报] 快照存档失败: " + eSnap.message.slice(0, 80)); }
-    console.log("[日报] 已推送 " + key + " (活动" + all.length + "次); 默认组" + defaultIds.length + "人, 分组成员" + Object.keys(buckets).map(function (s) { return s + ":" + buckets[s].ids.length; }).join(","));
-  } finally { _dailyBusy = false; }
+    // 半日报不存档 —— 历史日报页只看全天汇总
+    if (kind === "daily") {
+      try {
+        const snap = { date: key, total: all.length, villages: {}, devices: {}, lines: [], published: true };
+        for (const e of all) {
+          const v = deviceVillage(e.serial) || "其他";
+          snap.villages[v] = (snap.villages[v] || 0) + 1;
+          snap.devices[e.name || e.serial] = (snap.devices[e.name || e.serial] || 0) + 1;
+        }
+        snap.lines = all.slice(0, 30).map(function (e) {
+          const aiOk = e.ai && String(e.ai).indexOf("(") !== 0;
+          return (e.timeText || "") + " " + (e.name || "") + (aiOk ? "｜" + String(e.ai).replace(/\s+/g, " ").slice(0, 40) : "");
+        });
+        saveDailyReportSnapshot(key, snap);
+        console.log("[日报] 快照已存档: " + key);
+      } catch (eSnap) { console.log("[日报] 快照存档失败: " + eSnap.message.slice(0, 80)); }
+    }
+    console.log("[" + label + "] 已推送 " + key + " (活动" + all.length + "次); 默认组" + defaultIds.length + "人, 分组成员" + Object.keys(buckets).map(function (s) { return s + ":" + buckets[s].ids.length; }).join(","));
+  } finally { _reportBusy[kind] = false; }
 }
+async function maybeDailyReport() { return maybeReport("daily"); }
+async function maybeHalfDailyReport() { return maybeReport("half"); }
 
 // 每天0点重置重试计数
 function resetDailyRetryCount() {
-  _dailyRetryCount = 0;
-  console.log("[日报] 新的一天，重置重试计数");
+  _reportRetry.daily = 0;
+  _reportRetry.half = 0;
+  console.log("[日报] 新的一天，重置重试计数(日报+半日报)");
 }
 
-setInterval(maybeDailyReport, 60e3);
-setTimeout(maybeDailyReport, 20e3);
+setInterval(function () { maybeDailyReport(); maybeHalfDailyReport(); }, 60e3);
+setTimeout(function () { maybeDailyReport(); maybeHalfDailyReport(); }, 20e3);
 
 // 每天0点重置重试计数
 const now = new Date();
@@ -2907,7 +2971,7 @@ setTimeout(function() {
 }, nextMidnight - now);
 
 async function freshCapture(serial) {
-  const file = path.join(ROOT, "captures", serial + "_" + Date.now() + ".jpg");
+  const file = path.join(ROOT, "captures", capturename.captureFileName(serial, Date.now(), deviceVillage(serial), false));
   // 高清抓图: 主码流截帧, 失败自动回落原抓图接口
   await hdcapture.captureHD(client, serial, file);
   return file;
@@ -3418,7 +3482,7 @@ const server = http.createServer(function (req, res) {
   // EZUIKit-HLS播放器静态资源(含H265软解wasm, 不依赖浏览器解码能力)
   if (req.method === "GET" && u.pathname.indexOf("/ezui/") === 0) {
     const fn = decodeURIComponent(u.pathname.slice("/ezui/".length));
-    if (!fn || fn.indexOf("..") >= 0 || !/^[A-Za-z0-9_\/.-]+$/.test(fn)) { res.writeHead(403); res.end(""); return; }
+    if (!fn || fn.indexOf("..") >= 0 || !/^[A-Za-z0-9_\/.\-\u4e00-\u9fa5]+$/.test(fn)) { res.writeHead(403); res.end(""); return; }
     const fp = path.join(ROOT, "public", "ezuikit", fn);
     const mime = ({ ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".html": "text/html" })[path.extname(fn).toLowerCase()] || "application/octet-stream";
     fs.readFile(fp, function (err2, buf2) {
@@ -3434,11 +3498,16 @@ const server = http.createServer(function (req, res) {
     // 缩略图路由: /captures/thumb/文件名 — 先于正则校验处理(含/字符)
     if (fn.startsWith("thumb/")) {
       const origFn = decodeURIComponent(fn.slice(6)); // remove "thumb/"
-      if (!/^[A-Za-z0-9_.-]+\.jpe?g$/i.test(origFn)) { res.writeHead(403); res.end(""); return; }
-      const origPath = path.join(ROOT, "captures", origFn);
+      // 允许 push/ motion/ 子目录(与主路由一致): /captures/thumb/push/xxx.jpg
+      let origPath;
+      if (origFn.startsWith("push/")) origPath = path.join(PUSH_DIR, decodeURIComponent(origFn.slice(5)));
+      else if (origFn.startsWith("motion/")) origPath = path.join(MOTION_DIR, decodeURIComponent(origFn.slice(7)));
+      else origPath = path.join(ROOT, "captures", origFn);
+      const origBase = path.basename(origPath);
+      if (!capturename.safeImageName(origBase)) { res.writeHead(403); res.end(""); return; }
       if (!fs.existsSync(origPath)) { res.writeHead(404); res.end("not found"); return; }
       // 生成缩略图文件名(与 ensureThumbFile 预生成共用同一缓存)
-      const thumbPath = thumbPathOf(origFn);
+      const thumbPath = thumbPathOf(origBase);
       // 已有缩略图直接输出
       if (fs.existsSync(thumbPath)) {
         res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=604800, immutable" });
@@ -3460,10 +3529,21 @@ const server = http.createServer(function (req, res) {
       })();
       return;
     }
+    // 推送记录页专用图: captures/push/ 子目录(2026-10-24 起, 永久保留)
+    if (fn.startsWith("push/")) {
+      const pfn = decodeURIComponent(fn.slice("push/".length));
+      if (!capturename.safeImageName(pfn)) { res.writeHead(403); res.end(""); return; }
+      fs.readFile(path.join(PUSH_DIR, pfn), function (err, buf) {
+        if (err) { res.writeHead(404); res.end("not found"); return; }
+        res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=604800, immutable" });
+        res.end(buf);
+      });
+      return;
+    }
     // 移动侦测暂存图: captures/motion/ 子目录(见分级留存)。只短期存在, 供"萤石推送记录"页关联展示
     if (fn.startsWith("motion/")) {
       const mfn = decodeURIComponent(fn.slice("motion/".length));
-      if (!/^[A-Za-z0-9_.-]+\.jpe?g$/i.test(mfn)) { res.writeHead(403); res.end(""); return; }
+      if (!capturename.safeImageName(mfn)) { res.writeHead(403); res.end(""); return; }
       fs.readFile(path.join(MOTION_DIR, mfn), function (err, buf) {
         if (err) { res.writeHead(404); res.end("not found"); return; }
         res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=600" });
@@ -3472,7 +3552,7 @@ const server = http.createServer(function (req, res) {
       return;
     }
     // 原图
-    if (!/^[A-Za-z0-9_.-]+\.jpe?g$/i.test(fn)) { res.writeHead(403); res.end(""); return; }
+    if (!capturename.safeImageName(fn)) { res.writeHead(403); res.end(""); return; }
     fs.readFile(path.join(ROOT, "captures", fn), function (err, buf) {
       if (err) { res.writeHead(404); res.end("not found"); return; }
       res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=604800, immutable" });
@@ -3729,8 +3809,12 @@ function sweepCaptureDir(dir, cutoff, label) {
 
 function cleanupCaptures() {
   // captureRetentionDays=0 表示不清理(永久保留); 默认3小时的 motion 垫图仍按需清理
-  const days = Number((cfg.storage && cfg.storage.captureRetentionDays) || 60);
-  const hours = Number((cfg.storage && cfg.storage.motionRetentionHours) || 3);
+  // ⚠️ 不能用 `|| 默认值`: 配置写 0 是"永久保留", 而 `0 || 60` 会把 0 当假值回落成 60 天
+  // (2026-10-24 实测: 配置注释写明 0=永久保留, 实际却在按 60 天删, 9 月底那批图就是这么丢的)
+  const _cr = (cfg.storage && cfg.storage.captureRetentionDays);
+  const days = (_cr === undefined || _cr === null || _cr === "") ? 60 : Number(_cr);
+  const _mr = (cfg.storage && cfg.storage.motionRetentionHours);
+  const hours = (_mr === undefined || _mr === null || _mr === "") ? 3 : Number(_mr);
   if (days > 0) sweepCaptureDir(CAPTURE_DIR, Date.now() - days * 86400e3, "事件图(超过 " + days + " 天)");
   if (hours > 0) sweepCaptureDir(MOTION_DIR, Date.now() - hours * 3600e3, "移动侦测暂存(超过 " + hours + " 小时)");
 }
@@ -3788,7 +3872,20 @@ async function checkDiskSpace() {
         const msg = "⚠️ 监控磁盘空间不足\n\n剩余: " + freeGB.toFixed(1) + " GB（" + freePct.toFixed(1) + "%）\n阈值: " + warnGB + "GB / " + warnPct + "%\n\n请尽快上传云盘备份 captures/ 目录后清理旧文件";
         // 复用日报推送通道(force=true 绕过时段限制, 确保告警必达), 推送到全员
         if ((cfg.wxTest || {}).enabled) {
-          pushTestTemplate("监控磁盘告警", new Date().toLocaleString("zh-CN", { hour12: false }), msg, "", "", true, {}).then(function () {}).catch(function () {});
+          // ⚠️ 实参必须对位(2026-10-08 修): 原来传的是
+          //   (标题, 时间, msg, "", "", true, {}) —— msg 整段正文被塞进 deviceStr(设备名字段),
+          //   而 detailUrl 传了空串。后果两条:① keyword2 超长(正文含换行emoji)可能被微信拒收,
+          //   这条磁盘告警根本发不出去;② 模板消息 url 为空时微信**仍返回 errcode=0**
+          //   但点击无任何跳转(见项目约束: 模板消息 url 绝不能为空), 恰好在最需要处理的告警上失效。
+          // 磁盘满必然影响抓图/看板, 指向今日页最合理。
+          const pubBaseD = String(((cfg.wxTest || {}).publicBase) || "").replace(/\/+$/, "");
+          const diskUrl = pubBaseD ? tokUrl(pubBaseD + "/today") : "";
+          pushTestTemplate("监控磁盘告警",
+            new Date().toLocaleString("zh-CN", { hour12: false }),
+            "全部监控设备",
+            msg.slice(0, 200),
+            diskUrl,
+            true, {}).then(function () {}).catch(function () {});
         }
       }
     }
