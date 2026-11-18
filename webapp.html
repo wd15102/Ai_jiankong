@@ -85,6 +85,18 @@ select{background:var(--btn);color:var(--text);border:1px solid var(--border);bo
 .filters{display:flex;gap:6px}
 .fb{background:var(--btn);color:var(--text2);border:1px solid var(--border);border-radius:6px;padding:6px 14px;cursor:pointer;font-size:13px}
 .fb.on{background:var(--accent);color:#111;border-color:var(--accent);font-weight:600}
+/* 米家推送记录页 */
+.mfb{background:var(--btn);color:var(--text2);border:1px solid var(--border);border-radius:6px;padding:4px 12px;cursor:pointer;font-size:12px}
+.mfb.on{background:var(--accent);color:#111;border-color:var(--accent);font-weight:600}
+.push-group-title{padding:10px 16px;font-weight:600;color:#fff;border-bottom:1px solid var(--border);background:rgba(255,255,255,.02)}
+.push-time{flex:none;width:150px;color:var(--text)}
+.push-types{flex:1}
+.push-meta{font-size:12px;color:var(--text2);margin-top:2px}
+.push-meta .ok{color:var(--nobody)}
+.push-meta .muted{opacity:.7}
+.push-thumb{width:120px;height:68px;object-fit:cover;border-radius:6px;cursor:pointer;flex:none}
+.push-thumb.noimg{display:flex;align-items:center;justify-content:center;background:var(--btn);color:var(--text2);font-size:12px;width:120px;height:68px;border-radius:6px;flex:none}
+.tag{display:inline-block;background:rgba(245,197,24,.12);color:var(--accent);border-radius:4px;padding:1px 6px;margin-right:4px;font-size:12px}
 .view-toggle{display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden}
 .vb{background:var(--btn);color:var(--text2);border:none;padding:6px 12px;cursor:pointer;font-size:13px}
 .vb.on{background:var(--accent);color:#111}
@@ -221,6 +233,9 @@ select{background:var(--btn);color:var(--text);border:1px solid var(--border);bo
 .lightbox .lb-info .muted-note{color:var(--text2);font-style:italic;font-size:12px}
 .lightbox .lb-close{position:absolute;top:14px;right:20px;background:none;border:1px solid var(--border);color:var(--text2);font-size:20px;width:38px;height:38px;border-radius:50%;cursor:pointer;line-height:1}
 .lightbox .lb-close:hover{color:#fff;border-color:var(--text2)}
+.lightbox video{max-width:92vw;max-height:76vh;border-radius:10px;border:1px solid var(--border);box-shadow:0 12px 48px rgba(0,0,0,.6);cursor:default;background:#000}
+#lbPlayBtn{display:none;align-items:center;gap:8px;padding:12px 28px;font-size:15px;font-weight:600;color:#1a1a1a;background:rgba(245,197,24,.95);border:none;border-radius:26px;cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,.5)}
+#lbPlayBtn:hover{background:#ffd43b}
 .card{animation:fadeIn .3s ease}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
 footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(--border);text-align:center}
@@ -232,6 +247,7 @@ footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(-
     <button class="tab on" data-tab="live">📹 实时看板</button>
     <button class="tab" data-tab="push">📨 萤石推送记录</button>
     <button class="tab" data-tab="person">👤 有人记录</button>
+    <button class="tab" data-tab="mijia">🏠 米家推送记录</button>
   </nav>
 </header>
 <div class="stats-bar" id="statsBar">
@@ -342,10 +358,43 @@ footer{padding:14px 24px;color:#5f6b78;font-size:12px;border-top:1px solid var(-
   </div>
   <div id="personGroups"><div class="empty">加载中...</div></div>
 </section>
+<section class="push-page" id="page-mijia" style="display:none">
+  <div class="push-header">
+    <h2>🏠 米家推送记录</h2>
+    <div class="push-actions">
+      <button class="btn" id="btnRefreshMijia">🔄 刷新</button>
+      <span class="hint">老家米家摄像机报警 · 有人移动 / 画面变动 已推送微信 · 图片永久保存本机</span>
+    </div>
+  </div>
+  <div class="push-stats" id="mijiaStats"></div>
+  <div class="push-filters" id="mijiaFilters">
+    <span class="f-label">类型</span>
+    <button class="mfb on" data-mf="all">全部</button>
+    <button class="mfb" data-mf="PeopleMotion">有人移动</button>
+    <button class="mfb" data-mf="ObjectMotion">画面变动</button>
+    <button class="mfb" data-mf="other">其它</button>
+    <span class="f-sep"></span>
+    <span class="f-label">推送</span>
+    <button class="mfb on" data-mpf="all">全部</button>
+    <button class="mfb" data-mpf="yes">已推送</button>
+    <button class="mfb" data-mpf="no">未推送</button>
+    <span class="f-sep"></span>
+    <span class="f-label">时间</span>
+    <button class="mfb on" data-mdf="all">全部</button>
+    <button class="mfb" data-mdf="today">今日</button>
+    <button class="mfb" data-mdf="yesterday">昨日</button>
+    <input type="date" id="mijiaDatePick" class="date-input" title="选择任意日期查看当天报警">
+    <span class="f-sep"></span>
+    <span class="f-info" id="mijiaFilterInfo"></span>
+  </div>
+  <div id="mijiaGroups"><div class="empty">加载中...</div></div>
+</section>
 <div class="new-alert" id="newAlert" onclick="this.classList.remove('show')">🔔 检测到新报警！点击查看</div>
 <div class="lightbox" id="pushLightbox" onclick="if(event.target===this)closePushPic()">
   <button class="lb-close" onclick="closePushPic()" title="关闭 (Esc)">×</button>
   <img id="lbImg" alt="推送截图放大查看">
+  <video id="lbVideo" controls playsinline webkit-playsinline x5-playsinline preload="metadata" style="display:none"></video>
+  <button id="lbPlayBtn" onclick="lbPlayVideo(event)">▶ 播放报警视频 (9s)</button>
   <div class="lb-info" id="lbInfo"></div>
 </div>
 <footer>局域网访问: http://电脑IP:8790 · 数据来自 monitor.js 报警事件</footer>
@@ -423,10 +472,133 @@ function switchTab(name){
   $("page-history").style.display = name === "live" ? "block" : "none";
   $("page-push").style.display = name === "push" ? "block" : "none";
   $("page-person").style.display = name === "person" ? "block" : "none";
+  $("page-mijia").style.display = name === "mijia" ? "block" : "none";
   Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(b){ b.classList.toggle("on", b.getAttribute("data-tab") === name); });
   if (name === "push") { buildDeviceSpecificButtons(); loadPushLog(1); }
   if (name === "person") loadPersonRecords();
+  if (name === "mijia") loadMijia();
 }
+
+// ---------- 米家推送记录 ----------
+const MIJIA_TYPE_LABELS = { PeopleMotion: "有人移动", ObjectMotion: "画面变动", PetMotion: "宠物侦测", VehicleMotion: "车辆侦测", FaceMotion: "人脸侦测", BabyCry: "婴儿啼哭", VoiceMotion: "异响侦测" };
+let _mijiaEvents = [], _mijiaTypeFilter = "all", _mijiaPushFilter = "all", _mijiaDateFilter = "all", MIJIA_ITEMS = [];
+function mijiaLabel(t){ return MIJIA_TYPE_LABELS[t] || t; }
+async function loadMijia(){
+  const box = $("mijiaGroups");
+  try {
+    const r = await fetch("/api/mijia-events?limit=500");
+    const j = await r.json();
+    _mijiaEvents = j.events || [];
+  } catch(e){ box.innerHTML = '<div class="empty">加载失败: ' + esc(e.message) + '</div>'; return; }
+  renderMijia();
+}
+function mijiaDay(e){
+  const f = (e.imgFile || "").split("/")[0];
+  if (f) return f;
+  const m = String(e.time || "").match(/(\d{4})\/(\d{2})\/(\d{2})/);
+  return m ? (m[1] + "-" + m[2] + "-" + m[3]) : "";
+}
+function mijiaDateStr(off){
+  const d = new Date(Date.now() + off * 86400000);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+}
+function renderMijia(){
+  const box = $("mijiaGroups");
+  let arr = _mijiaEvents.slice();
+  if (_mijiaTypeFilter === "other") arr = arr.filter(function(e){ return !e.types || !e.types.some(function(t){ return t === "PeopleMotion" || t === "ObjectMotion"; }); });
+  else if (_mijiaTypeFilter !== "all") arr = arr.filter(function(e){ return (e.types || []).indexOf(_mijiaTypeFilter) >= 0; });
+  if (_mijiaPushFilter === "yes") arr = arr.filter(function(e){ return e.pushed; });
+  else if (_mijiaPushFilter === "no") arr = arr.filter(function(e){ return !e.pushed; });
+  if (_mijiaDateFilter === "today") arr = arr.filter(function(e){ return mijiaDay(e) === mijiaDateStr(0); });
+  else if (_mijiaDateFilter === "yesterday") arr = arr.filter(function(e){ return mijiaDay(e) === mijiaDateStr(-1); });
+  else if (_mijiaDateFilter !== "all") arr = arr.filter(function(e){ return mijiaDay(e) === _mijiaDateFilter; });
+  $("mijiaFilterInfo").textContent = "共 " + _mijiaEvents.length + " 条 / 当前 " + arr.length + " 条";
+  const pushedCount = _mijiaEvents.filter(function(e){ return e.pushed; }).length;
+  $("mijiaStats").innerHTML = '<div class="stat-card"><div class="val">' + _mijiaEvents.length + '</div><div class="label">报警总数</div></div>'
+    + '<div class="stat-card"><div class="val highlight">' + pushedCount + '</div><div class="label">已推送微信</div></div>'
+    + '<div class="stat-card"><div class="val safe">' + (_mijiaEvents.length - pushedCount) + '</div><div class="label">仅记录</div></div>';
+  if (!arr.length) { box.innerHTML = '<div class="empty">暂无米家报警记录</div>'; return; }
+  // 按主类型分组: 有人移动优先, 其次画面变动, 其它
+  const groups = {};
+  arr.forEach(function(e){
+    const ts = e.types || [];
+    const key = ts.indexOf("PeopleMotion") >= 0 ? "PeopleMotion"
+      : (ts.indexOf("ObjectMotion") >= 0 ? "ObjectMotion" : "Other");
+    (groups[key] = groups[key] || []).push(e);
+  });
+  const labelOfGroup = function(k){
+    if (k === "Other") return "其它类型";
+    return mijiaLabel(k);
+  };
+  const gk = Object.keys(groups).sort(function(a, b){
+    const rank = function(k){ return k === "PeopleMotion" ? 0 : (k === "ObjectMotion" ? 1 : 2); };
+    return rank(a) - rank(b);
+  });
+  let html = "";
+  MIJIA_ITEMS = [];
+  gk.forEach(function(k){
+    const items = groups[k].slice().sort(function(a, b){ return (b.createTime || 0) - (a.createTime || 0); });
+    html += '<div class="push-group">' +
+      '<div class="push-group-head" onclick="this.parentNode.classList.toggle(\'collapsed\')">' +
+        '<span class="toggle">▼</span>' +
+        '<span class="name">' + esc(labelOfGroup(k)) + '<span class="code">' + esc(k) + '</span></span>' +
+        '<span class="count">' + items.length + ' 条</span>' +
+      '</div>' +
+      '<div class="push-rows">';
+    items.forEach(function(e){
+      const idx = MIJIA_ITEMS.length;
+      MIJIA_ITEMS.push(e);
+      const fake = {
+        time: e.time || "",
+        name: "双溪村爷爷家",
+        title: (e.labels || []).join("/"),
+        person: (e.types || []).indexOf("PeopleMotion") >= 0,
+        provider: "米家",
+        ai: "",
+        pushed: e.pushed === true,
+        file: e.imgFile || "",
+        serial: "",
+        veh: 0,
+        extraBadge: (e.backfill ? '<span class="badge merge">历史回填</span>' : "") + (e.videoUrl ? '<span class="badge" style="background:rgba(81,207,102,.15);color:#51cf66">▶ 视频</span>' : "")
+      };
+      html += renderMonitorCard(fake, idx, e.pic, "openMijiaPic", "mijia");
+    });
+    html += '</div></div>';
+  });
+  box.innerHTML = html;
+}
+function openMijiaPic(idx){
+  const e = MIJIA_ITEMS[idx];
+  if (!e) return;
+  _lbVideoUrl = e.videoUrl || "";
+  $("lbImg").src = e.pic || "";
+  $("lbInfo").textContent = (e.time || "") + " · " + (e.labels || []).join("/") + (_lbVideoUrl ? " · 📹 9s现场视频" : "");
+  lbResetVideo();
+  if (_lbVideoUrl) $("lbPlayBtn").style.display = "flex"; // 有视频: 显示播放按钮
+  if (!e.pic && _lbVideoUrl) $("lbImg").style.display = "none"; // 无图但有视频: 直接展示视频入口
+  $("pushLightbox").classList.add("open");
+}
+// ---- 灯箱内报警视频播放(米家9s片段): 大图上叠播放按钮, 点击切到 <video>(原生控件支持暂停/进度条拖动) ----
+var _lbVideoUrl = "";
+function lbResetVideo(clearUrl){
+  if (clearUrl) _lbVideoUrl = "";
+  var v = $("lbVideo");
+  try { v.pause(); v.removeAttribute("src"); v.load(); } catch(err){}
+  v.style.display = "none";
+  $("lbPlayBtn").style.display = "none";
+  $("lbImg").style.display = "";
+}
+function lbPlayVideo(ev){
+  if (ev) { ev.stopPropagation(); ev.preventDefault(); }
+  if (!_lbVideoUrl) return;
+  var v = $("lbVideo");
+  $("lbImg").style.display = "none";
+  v.style.display = "";
+  $("lbPlayBtn").style.display = "none";
+  if (v.getAttribute("src") !== _lbVideoUrl) { v.src = _lbVideoUrl; v.load(); }
+  try { var p = v.play(); if (p && p.catch) p.catch(function(){}); } catch(err){}
+}
+
 
 // 萤石推送记录的每条记录需要一个"含义说明"，避免出现"无内容描述"
 // 后端的 text 字段在 VMD/motiondetect 这类推送里本来就不存在（萤石端没传）
@@ -486,9 +658,16 @@ function openPushPic(i){
     '<div class="lb-head">' + aiBadgeHtml(it.person, it.ai) + '<span>' + esc(it.time) + ' · ' + esc(it.devName) + '</span></div>' +
     (hasAiVerdict(it.ai) ? '<div>' + esc(it.ai) + '</div>'
            : '<div class="muted-note">该图片没有匹配到 AI 判读记录（普通移动侦测消息默认不做 AI 分析）</div>');
+  lbResetVideo(true);
   $("pushLightbox").classList.add("open");
 }
-function closePushPic(){ $("pushLightbox").classList.remove("open"); }
+function closePushPic(){
+  $("pushLightbox").classList.remove("open");
+  try { var v = $("lbVideo"); v.pause(); if (v.currentTime) v.currentTime = 0; } catch(err){}
+  $("lbImg").style.display = "";
+  $("lbVideo").style.display = "none";
+  $("lbPlayBtn").style.display = "none";
+}
 
 // ---- 统一监控卡片渲染(三页共用) ----
 // 展示: 时间/设备/触发类型 + 有无人/算法/推送状态 + AI大模型检测结论
@@ -553,8 +732,9 @@ function renderMonitorCard(e, idx, picUrl, onPicClick, context){
 async function pushSingle(i){
   var btn = document.querySelector('.push-btn[data-idx="' + i + '"]');
   var context = btn ? (btn.getAttribute("data-context") || "history") : "history";
-  var items = context === "person" ? PERSON_ITEMS : (context === "push" ? PUSH_ITEMS : HISTORY_ITEMS);
+  var items = context === "person" ? PERSON_ITEMS : (context === "push" ? PUSH_ITEMS : (context === "mijia" ? MIJIA_ITEMS : HISTORY_ITEMS));
   var e = items[i]; if (!e) return;
+  if (context === "mijia"){ alert("米家报警由监控进程自动推送（仅有人移动 / 画面变动两类）"); return; }
   if (btn){ btn.textContent = "推送中..."; btn.disabled = true; btn.style.opacity = "0.6"; }
   try {
     var d = await (await fetch("/api/push-single", {
@@ -579,12 +759,16 @@ document.addEventListener("keydown", function(e){ if (e.key === "Escape") closeP
 // ---- 历史报警记录图片灯箱: 点击图片放大, 复用 #pushLightbox, 点击遮罩/×/Esc 关闭 ----
 // HISTORY_ITEMS/PERSON_ITEMS/PUSH_ITEMS 已在文件顶部统一声明, 此处不再重复
 function openHistoryPic(i){
-  var e = HISTORY_ITEMS[i]; if (!e || !e.file) return;
-  $("lbImg").src = "/captures/" + encodeURIComponent(e.file);
+  var e = HISTORY_ITEMS[i]; if (!e || (!e.file && !e.videoUrl)) return;
+  _lbVideoUrl = e.videoUrl || "";
+  $("lbImg").src = e.file ? ("/captures/" + encodeURIComponent(e.file)) : "";
   $("lbInfo").innerHTML =
     '<div class="lb-head">' + aiBadgeHtml(e.person, e.ai) + '<span>' + esc(e.time) + ' · ' + esc(e.name) + '</span></div>' +
     (hasAiVerdict(e.ai) ? '<div>' + esc(e.ai) + '</div>'
                         : '<div class="muted-note">该记录没有 AI 判读结论（可在看板点「AI分析」补充）</div>');
+  lbResetVideo();
+  if (_lbVideoUrl) $("lbPlayBtn").style.display = "flex";
+  if (!e.file && _lbVideoUrl) $("lbImg").style.display = "none";
   $("pushLightbox").classList.add("open");
 }
 
@@ -1264,6 +1448,7 @@ function renderCards(events){
     // 选中/删除的定位键。空 file 的记录(没截到图)靠 file 根本区分不开 —— 都等于 "",
     // Set 里存一个空串就只能选中一条, 删除时还会误伤全部。改用 设备+时间戳 做键。
     var picUrl = e.file ? "/captures/" + fileEnc : "";
+    if (e.videoUrl) e.extraBadge = (e.extraBadge || "") + '<span class="badge" style="background:rgba(81,207,102,.15);color:#51cf66">▶ 视频</span>';
     var card = renderMonitorCard(e, i, picUrl, "openHistoryPic", "history");
     // 给实时画面的卡片加上 data 属性(选中/删除用), 并包裹删除按钮
     var cardDiv = document.createElement("div");
@@ -1379,6 +1564,35 @@ Array.prototype.forEach.call(document.querySelectorAll(".tab"), function(b){
   b.addEventListener("click", function(){ switchTab(b.getAttribute("data-tab")); });
 });
 $("btnRefreshPush").addEventListener("click", function(){ loadPushLog(1); });
+  $("btnRefreshMijia").addEventListener("click", function(){ loadMijia(); });
+  Array.prototype.forEach.call(document.querySelectorAll("#mijiaFilters [data-mf]"), function(b){
+    b.addEventListener("click", function(){
+      _mijiaTypeFilter = b.getAttribute("data-mf");
+      Array.prototype.forEach.call(document.querySelectorAll("#mijiaFilters [data-mf]"), function(x){ x.classList.toggle("on", x === b); });
+      renderMijia();
+    });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("#mijiaFilters [data-mpf]"), function(b){
+    b.addEventListener("click", function(){
+      _mijiaPushFilter = b.getAttribute("data-mpf");
+      Array.prototype.forEach.call(document.querySelectorAll("#mijiaFilters [data-mpf]"), function(x){ x.classList.toggle("on", x === b); });
+      renderMijia();
+    });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("#mijiaFilters [data-mdf]"), function(b){
+    b.addEventListener("click", function(){
+      _mijiaDateFilter = b.getAttribute("data-mdf");
+      Array.prototype.forEach.call(document.querySelectorAll("#mijiaFilters [data-mdf]"), function(x){ x.classList.toggle("on", x === b); });
+      var dp = $("mijiaDatePick"); if (dp && _mijiaDateFilter !== "all") dp.value = "";
+      renderMijia();
+    });
+  });
+  var mdp = $("mijiaDatePick");
+  if (mdp) mdp.addEventListener("change", function(){
+    _mijiaDateFilter = mdp.value || "all";
+    Array.prototype.forEach.call(document.querySelectorAll("#mijiaFilters [data-mdf]"), function(x){ x.classList.toggle("on", x.getAttribute("data-mdf") === "all" && _mijiaDateFilter === "all"); });
+    renderMijia();
+  });
 // 必须包一层: 直接传 loadPersonRecords 会把 click Event 当成 append=true,
   // 表现为"点刷新变成了往下翻页", 且 hasMore 为 false 时点了完全没反应
   $("btnRefreshPerson").addEventListener("click", function(){ loadPersonRecords(); });

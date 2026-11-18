@@ -312,6 +312,8 @@ function latestCapture(serial) {
 
 var _tkInflight = {}; // 同账号并发取token只发一次请求(防互踩把新token刷成"not latest")
 function isTokErr(x) { return x === 40001 || x === 42001 || x === 40014 || /"errcode":\s*(40001|42001|40014)\b/.test(String(x)); }
+// 畸形百分号编码(扫描器/坏链接)不能让异常冒泡崩掉整个进程: 解码失败返回 null, 由调用方按 400 拒绝
+function safeDecodeUri(s) { try { return decodeURIComponent(s); } catch (e) { return null; } }
 async function getWxToken(appId, appSecret, cacheName, force) {
   const cacheFile = path.join(ROOT, "data", cacheName);
   const key = appId + "@" + cacheName;
@@ -3322,6 +3324,10 @@ const server = http.createServer(function (req, res) {
       ".ai{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:16px}.ai h2{font-size:14px;color:var(--accent);margin-bottom:10px}" +
       ".ai .body{font-size:15px;line-height:1.7;white-space:pre-wrap;word-break:break-word}" +
       ".empty{text-align:center;color:var(--text2);padding:60px 20px;line-height:1.8}" +
+      ".vidbox{margin:0 0 8px 0;background:#000;border:1px solid var(--border);border-radius:12px;overflow:hidden}" +
+      ".vidbox video{width:100%;display:block;background:#000}" +
+      ".vid-fail{display:none;padding:16px;text-align:center;color:var(--text2);font-size:13px}" +
+      ".vidbox.fail video{display:none}.vidbox.fail .vid-fail{display:block}" +
       // 灯箱lightbox样式
       ".lb-mask{position:fixed;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.95);z-index:999;display:none;align-items:center;justify-content:center;touch-action:none}" +
       ".lb-mask.show{display:flex}" +
@@ -3362,6 +3368,10 @@ const server = http.createServer(function (req, res) {
     try { ev = loadEventsArr().find(function (e) { return e.file === file; }); } catch (e) {}
     if (!ev) return HEAD + "<div class='empty'>未找到该监控记录<br><br>可能是较早的记录，或图片已被清理</div>" + TAIL;
     const tagCls = ev.person ? 'person' : 'nobody';
+    // 米家报警视频(约9s): 监控进程后台异步下载转码, 完成后 ev.video 有值; 未就绪时 onerror 显示提示
+    const vidHtml = ev.video
+      ? "<div class='vidbox'><video controls preload='metadata' playsinline webkit-playsinline x5-playsinline poster='" + THUMB_URL + "' src='/videos/" + esc(ev.video) + "' onerror='this.parentNode.className+=\" fail\"'></video><div class='vid-fail'>📹 报警视频处理中，请稍后刷新查看</div></div>"
+      : "";
     const aiText = (ev.ai && ev.ai !== '(点击AI分析)') ? ev.ai : '（暂无 AI 分析结论，可回到看板点击「AI分析」补充）';
     const inner =
       "<h1>📷 现场分析</h1>" +
@@ -3371,7 +3381,8 @@ const server = http.createServer(function (req, res) {
       "<div class='imgbox' onclick='openLB()'>" +
         "<img id='mainImg' src='" + THUMB_URL + "' data-orig='" + ORIG_URL + "' alt='现场照片' loading='eager'>" +
       "</div>" +
-      "<div class='hint'>☝️ 点图片放大 · 双击放大 · 双指捏合缩放 · 长按可保存原图</div>" +
+      vidHtml +
+      "<div class='hint'>" + (ev.video ? "☝️ 点图片放大 · ▶ 视频可直接播放(支持暂停/拖动进度条)" : "☝️ 点图片放大 · 双击放大 · 双指捏合缩放 · 长按可保存原图") + "</div>" +
       "<div class='meta'><b>时间：</b>" + esc(ev.time) + "<br><b>设备：</b>" + esc(ev.name) + (ev.provider ? ("<br><b>分析模型：</b>" + esc(ev.provider)) : '') + "</div>" +
       "<div class='ai'><h2>🤖 AI 分析结论</h2><div class='body'>" + esc(aiText) + "</div></div>";
     return HEAD + inner + TAIL;
@@ -3481,7 +3492,8 @@ const server = http.createServer(function (req, res) {
   }
   // EZUIKit-HLS播放器静态资源(含H265软解wasm, 不依赖浏览器解码能力)
   if (req.method === "GET" && u.pathname.indexOf("/ezui/") === 0) {
-    const fn = decodeURIComponent(u.pathname.slice("/ezui/".length));
+    const fn = safeDecodeUri(u.pathname.slice("/ezui/".length));
+    if (fn === null) { res.writeHead(400); res.end(""); return; }
     if (!fn || fn.indexOf("..") >= 0 || !/^[A-Za-z0-9_\/.\-\u4e00-\u9fa5]+$/.test(fn)) { res.writeHead(403); res.end(""); return; }
     const fp = path.join(ROOT, "public", "ezuikit", fn);
     const mime = ({ ".js": "text/javascript", ".css": "text/css", ".wasm": "application/wasm", ".html": "text/html" })[path.extname(fn).toLowerCase()] || "application/octet-stream";
@@ -3493,15 +3505,19 @@ const server = http.createServer(function (req, res) {
     return;
   }
   // 历史抓图静态访问（供推送详情链接打开现场照片）
+  // 米家报警视频(9s mp4): HTTP Range 分片, 供 /detail 详情页 <video> 播放
+  if (require("./lib/videoserve").serveMijiaVideo(ROOT, req, res, u.pathname)) return;
   if (req.method === "GET" && u.pathname.indexOf("/captures/") === 0) {
-    const fn = decodeURIComponent(u.pathname.slice("/captures/".length));
+    const fn = safeDecodeUri(u.pathname.slice("/captures/".length));
+    if (fn === null) { res.writeHead(400); res.end(""); return; }
     // 缩略图路由: /captures/thumb/文件名 — 先于正则校验处理(含/字符)
     if (fn.startsWith("thumb/")) {
-      const origFn = decodeURIComponent(fn.slice(6)); // remove "thumb/"
+      const origFn = safeDecodeUri(fn.slice(6)); // remove "thumb/"
+      if (origFn === null) { res.writeHead(400); res.end(""); return; }
       // 允许 push/ motion/ 子目录(与主路由一致): /captures/thumb/push/xxx.jpg
       let origPath;
-      if (origFn.startsWith("push/")) origPath = path.join(PUSH_DIR, decodeURIComponent(origFn.slice(5)));
-      else if (origFn.startsWith("motion/")) origPath = path.join(MOTION_DIR, decodeURIComponent(origFn.slice(7)));
+      if (origFn.startsWith("push/")) origPath = path.join(PUSH_DIR, safeDecodeUri(origFn.slice(5)) || "");
+      else if (origFn.startsWith("motion/")) origPath = path.join(MOTION_DIR, safeDecodeUri(origFn.slice(7)) || "");
       else origPath = path.join(ROOT, "captures", origFn);
       const origBase = path.basename(origPath);
       if (!capturename.safeImageName(origBase)) { res.writeHead(403); res.end(""); return; }
@@ -3531,7 +3547,8 @@ const server = http.createServer(function (req, res) {
     }
     // 推送记录页专用图: captures/push/ 子目录(2026-10-24 起, 永久保留)
     if (fn.startsWith("push/")) {
-      const pfn = decodeURIComponent(fn.slice("push/".length));
+      const pfn = safeDecodeUri(fn.slice("push/".length));
+      if (pfn === null) { res.writeHead(400); res.end(""); return; }
       if (!capturename.safeImageName(pfn)) { res.writeHead(403); res.end(""); return; }
       fs.readFile(path.join(PUSH_DIR, pfn), function (err, buf) {
         if (err) { res.writeHead(404); res.end("not found"); return; }
@@ -3542,7 +3559,8 @@ const server = http.createServer(function (req, res) {
     }
     // 移动侦测暂存图: captures/motion/ 子目录(见分级留存)。只短期存在, 供"萤石推送记录"页关联展示
     if (fn.startsWith("motion/")) {
-      const mfn = decodeURIComponent(fn.slice("motion/".length));
+      const mfn = safeDecodeUri(fn.slice("motion/".length));
+      if (mfn === null) { res.writeHead(400); res.end(""); return; }
       if (!capturename.safeImageName(mfn)) { res.writeHead(403); res.end(""); return; }
       fs.readFile(path.join(MOTION_DIR, mfn), function (err, buf) {
         if (err) { res.writeHead(404); res.end("not found"); return; }

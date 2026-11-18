@@ -13,6 +13,7 @@ const store = require("./lib/store"); // events.json 跨进程事务存储(与 m
 const hdcapture = require("./lib/hdcapture"); // 高清抓图: 主码流截帧, 失败回落原抓图接口
 const { push, pushTestTemplate } = require("./lib/push"); // 消息推送: 单用户推送 /api/push-single 端点用
 const capturename = require("./lib/capturename"); // 抓图文件名: {村名}_{日期}_{序列号}[_p].jpg
+const videoserve = require("./lib/videoserve"); // 米家报警视频静态服务(Range 分片播放)
 
 const ROOT = __dirname;
 const cfg = JSON.parse(fs.readFileSync(path.join(ROOT, "config.json"), "utf8"));
@@ -109,6 +110,13 @@ const PAGE = fs.existsSync(path.join(ROOT, "webapp.html"))
 // events.json 统一走 lib/store: 跨进程文件锁 + 「锁内重读最新内容再改」的事务。
 // 原来 loadEvents -> 改 -> saveEvents 的写法会和 webhook/monitor 的写入互相整份覆盖(丢事件)。
 function loadEvents() { return store.readEvents(ROOT); }
+// 事件时间 -> 毫秒(兼容 "2026/11/18 16:43:21" 与 "2026-11-18T16:43:21" 等格式; 解析失败返回 0 沉底)
+// 不能用字符串 localeCompare: zh-CN 的 toLocaleString 月份/日期不补零, "2026/10/8" 会被排到 "2026/10/28" 之后
+function eventTimeKey(s) {
+  const m = String(s || "").match(/(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return 0;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6] || 0)).getTime();
+}
 // 提交一次 events.json 事务。mutate 必须是**同步**函数:
 //   返回 false -> 内容无变化, 不写盘; 返回数组 -> 整体替换; 其他 -> 用原地修改后的数组
 // 返回 { ok, written }: ok=false 表示没拿到锁(改动被放弃), 调用方必须处理
@@ -609,10 +617,41 @@ function latestCapture(serial) {
   return best;
 }
 
+// 米家摄像机无实时流, 展示 captures/mijia/ 下最近一张报警图
+function latestMijiaCapture() {
+  const root = path.join(ROOT, "captures", "mijia");
+  let best = null;
+  (function walk(dir) {
+    let ents = [];
+    try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const ent of ents) {
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) walk(full);
+      else if (/\.(jpg|jpeg)$/i.test(ent.name)) {
+        try {
+          const st = fs.statSync(full);
+          if (!best || st.mtimeMs > best.mtimeMs) {
+            best = { file: path.relative(root, full).split(path.sep).join("/"), mtimeMs: st.mtimeMs };
+          }
+        } catch (e) {}
+      }
+    }
+  })(root);
+  return best;
+}
+
 const _capInflight = {}; // 同设备并发抓图去重
 async function doCapture(serial, forceNew) {
   if (!serial) serial = ((cfg.devices || [])[0] || {}).serial;
   if (!serial) throw new Error("没有可用的设备");
+  if (serial === "mijia") {
+    const m = latestMijiaCapture();
+    if (m) {
+      return { file: m.file, time: new Date(m.mtimeMs).toLocaleString("zh-CN", { hour12: false }),
+        url: "/captures/mijia/" + m.file, serial: "mijia", name: devName("mijia"), cached: true, mijia: true };
+    }
+    throw new Error("米家摄像机暂无报警图");
+  }
   if (_capInflight[serial]) {
     try { return await _capInflight[serial]; } catch (e) {}
   }
@@ -911,7 +950,7 @@ function makeHandler() {
       });
       const total = events.length;
       // 分页(limit 上限 500, 数据量大时保证渲染性能)
-      const page = events.slice().reverse().slice(offset, offset + limit);
+      const page = events.slice().sort(function (a, b) { return (b.ts || eventTimeKey(b.time)) - (a.ts || eventTimeKey(a.time)); }).slice(offset, offset + limit);
       // 转为与推送记录一致的格式, 复用 renderPersonRecords
       const items = page.map(function(e){
         const d = new Date(e.ts || 0);
@@ -974,12 +1013,32 @@ function makeHandler() {
     }
     if (req.method === "GET" && p === "/api/events") {
       const person = u.searchParams.get("person") || "all";
-      let arr = loadEvents().slice().reverse();
+      // events.json 物理顺序不可靠(webhook 追加写入, 米家同步时又整体排过序),
+      // 这里统一按事件时间降序输出, 保证实时看板最新报警在最前
+      let arr = loadEvents().slice().sort(function (a, b) { return eventTimeKey(b.time) - eventTimeKey(a.time); });
       if (person === "yes") arr = arr.filter(function(e){ return e.person === true; });
       if (person === "no") arr = arr.filter(function(e){ return e.person === false; });
       const limit = parseInt(u.searchParams.get("limit") || "100", 10);
       arr = arr.slice(0, Math.max(1, Math.min(500, limit)));
-      sendJson(res, 200, { count: arr.length, events: arr });
+      sendJson(res, 200, { count: arr.length, events: arr.map(function (e) {
+        return Object.assign({}, e, { videoUrl: e.video ? ("/videos/" + e.video) : "" });
+      }) });
+      return;
+    }
+    if (req.method === "GET" && p === "/api/mijia-events") {
+      let arr = [];
+      try { arr = JSON.parse(fs.readFileSync(path.join(ROOT, "data", "mijia_events.json"), "utf8")) || []; } catch (e) {}
+      // 文件本身已按 createTime 倒序(新→旧)存储, 直接取前 N 条 = 最新记录
+      arr = arr.slice();
+      const limit = parseInt(u.searchParams.get("limit") || "200", 10);
+      arr = arr.slice(0, Math.max(1, Math.min(1000, limit)));
+      sendJson(res, 200, {
+        count: arr.length,
+        events: arr.map(function(e) {
+          const pic = (e.hdFile || e.imgFile) ? ("/captures/mijia/" + (e.hdFile || e.imgFile)) : "";
+          return Object.assign({}, e, { pic: pic, videoUrl: e.videoFile ? ("/videos/" + e.videoFile) : "", videoSize: e.videoSize || 0 });
+        })
+      });
       return;
     }
     if (req.method === "GET" && p === "/api/capture") {
@@ -1015,13 +1074,38 @@ function makeHandler() {
       })();
       return;
     }
+    // 米家报警视频(9s mp4): HTTP Range 分片, 供看板灯箱 <video> 播放
+    if (videoserve.serveMijiaVideo(ROOT, req, res, p)) return;
     if (req.method === "GET" && p.indexOf("/captures/") === 0) {
-      let rel = decodeURIComponent(p.slice("/captures/".length));
+      let rel;
+      try { rel = decodeURIComponent(p.slice("/captures/".length)); }
+      catch (e) { res.writeHead(400); res.end(""); return; } // 畸形百分号编码: 拒绝请求, 不能让异常冒泡崩掉整个服务
       // 移动侦测暂存图在 captures/motion/ 子目录(见 webhook.js 的分级留存), 单独放行
       // 推送记录页专用图在 captures/push/ 子目录(2026-10-24 起, 永久保留)
       let dir = path.join(ROOT, "captures");
       if (rel.indexOf("push/") === 0) { dir = path.join(ROOT, "captures", "push"); rel = rel.slice("push/".length); }
       else if (rel.indexOf("motion/") === 0) { dir = path.join(ROOT, "captures", "motion"); rel = rel.slice("motion/".length); }
+      else if (rel.indexOf("mijia_hd/") === 0) {
+        const sub = rel.slice("mijia_hd/".length);
+        if (sub.indexOf("..") >= 0 || !capturename.safeImageName(path.basename(sub))) { res.writeHead(400); res.end(""); return; }
+        fs.readFile(path.join(ROOT, "captures", "mijia_hd", sub), function(err3, buf3) {
+          if (err3) { res.writeHead(404); res.end(""); return; }
+          res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "max-age=600" });
+          res.end(buf3);
+        });
+        return;
+      }
+      else if (rel.indexOf("mijia/") === 0) {
+        // 米家报警图在 captures/mijia/<日期>/ 下(永久保留), 需保留日期子目录
+        const sub = rel.slice("mijia/".length);
+        if (sub.indexOf("..") >= 0 || !capturename.safeImageName(path.basename(sub))) { res.writeHead(400); res.end(""); return; }
+        fs.readFile(path.join(ROOT, "captures", "mijia", sub), function(err2, buf2) {
+          if (err2) { res.writeHead(404); res.end(""); return; }
+          res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "max-age=600" });
+          res.end(buf2);
+        });
+        return;
+      }
       const name = path.basename(rel); // basename 兜底防路径穿越
       if (!capturename.safeImageName(name)) { res.writeHead(400); res.end(""); return; }
       fs.readFile(path.join(dir, name), function(err, buf) {

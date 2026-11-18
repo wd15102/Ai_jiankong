@@ -29,12 +29,13 @@ if exist "data\monitor.pid" (
     for /f %%p in (data\monitor.pid) do taskkill /F /PID %%p >nul 2>&1
 )
 timeout /t 2 /nobreak >nul
-powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'webhook\.js|webapp\.js|monitor\.js' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'webhook\.js|webapp\.js|monitor\.js|mijia_monitor\.js' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 
 echo [3/4] 启动服务...
 start "AI-Monitor-Wx" /min cmd /c "node webhook.js >> data\webhook_run.log 2>&1"
 start "AI-Monitor-Web" /min cmd /c "node webapp.js --cfg config.json >> data\webapp_run.log 2>&1"
 start "AI-Monitor-Monitor" /min cmd /c "node monitor.js watch >> data\monitor_run.log 2>&1"
+start "AI-Monitor-Mijia" /min cmd /c "node mijia_monitor.js >> data\mijia_run.log 2>&1"
 timeout /t 3 /nobreak >nul
 
 echo [4/4] 健康检查...
@@ -71,7 +72,7 @@ if exist "data\webapp.pid" (
 )
 taskkill /F /IM cloudflared.exe >nul 2>&1
 timeout /t 2 /nobreak >nul
-powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'webhook\.js|webapp\.js|monitor\.js' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'webhook\.js|webapp\.js|monitor\.js|mijia_monitor\.js' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 echo   [完成] 服务已停止, 端口已释放, 可安全关闭窗口。
 pause
 exit /b 0
@@ -87,6 +88,12 @@ curl -s -m 3 http://127.0.0.1:8790/health >nul 2>&1
 if errorlevel 1 (
     echo [%time%] WebApp died, restarting...
     start "AI-Monitor-Web" /min cmd /c "node webapp.js --cfg config.json >> data\webapp_run.log 2>&1"
+    timeout /t 3 /nobreak >nul
+)
+powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'mijia_monitor' } | Select-Object -ExpandProperty ProcessId" | findstr /R "[0-9]" >nul
+if errorlevel 1 (
+    echo [%time%] Mijia monitor died, restarting...
+    start "AI-Monitor-Mijia" /min cmd /c "node mijia_monitor.js >> data\mijia_run.log 2>&1"
     timeout /t 3 /nobreak >nul
 )
 goto watchdog
