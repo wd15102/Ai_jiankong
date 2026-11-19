@@ -121,9 +121,9 @@ async function buildRecord(unit, existIds, isBackfill) {
 // 米家报警推送名单: 从 config.json 的 mijiaPushOpenids 读取(含 openid, 不入库)
 const MIJIA_PUSH_LIST = CFG.mijiaPushOpenids || [];
 async function pushOne(rec) {
-  const title = "双溪村爷爷家 · " + rec.labels.join("/");
+  const title = "爷爷老家 · " + rec.labels.join("/");
   const body = "时间：" + rec.time + "\n类型：" + rec.labels.join("、") +
-    (rec.desc ? "\n备注：" + rec.desc : "") + "\n地点：双溪村爷爷家";
+    (rec.desc ? "\n备注：" + rec.desc : "") + "\n地点：爷爷老家";
   const imgFile = rec.hdFile || rec.imgFile || "";
   const imgAbs = imgFile ? path.join(CAP_DIR, imgFile) : "";
   try {
@@ -132,12 +132,15 @@ async function pushOne(rec) {
     const TOKEN = String(((CFG.wxServer || {}).publicToken) || "");
     let detailUrl = "";
     if (pubBase && imgFile) {
-      detailUrl = pubBase + "/detail?file=" + encodeURIComponent(imgFile);
+      detailUrl = pubBase + "/detail?file=" + encodeURIComponent("mijia/" + imgFile);
       if (TOKEN) detailUrl += "&token=" + encodeURIComponent(TOKEN);
     }
-    const n = await pushLib.pushTestTemplate(title, rec.time, "双溪村爷爷家", body, detailUrl, false, {
+    const n = await pushLib.pushTestTemplate(title, rec.time, "爷爷老家", body, detailUrl, false, {
       allowOid: function(oid) { return MIJIA_PUSH_LIST.some(function(x) { return x.oid === oid; }); },
-      serial: ""
+      serial: "",
+      kw3: "设备端侦测",
+      kw4: rec.labels.join("、").slice(0, 20),
+      kw5: "点击详情查看现场"
     });
     if (n > 0) return { ok: true, detail: "推送 " + n + " 人" };
     return { ok: false, reason: "推送 0 人(可能配额耗尽)" };
@@ -287,13 +290,13 @@ async function tick() {
       merged.sort(function (a, b) { return b.createTime - a.createTime; });
       return merged;
     }, { cap: 0 });
-    // 同步写入 events.json, 让实时看板「历史报警记录」也能看到双溪村爷爷家
+    // 同步写入 events.json, 让实时看板「历史报警记录」也能看到爷爷老家
     const evs = fresh.map(function (r) {
       return {
         time: r.time,
         ts: r.createTime,
         fileId: r.fileId,
-        name: "双溪村爷爷家",
+        name: "爷爷老家",
         title: (r.labels || []).join("/"),
         file: (r.hdFile || r.imgFile) ? ("mijia/" + (r.hdFile || r.imgFile)) : "",
         person: (r.types || []).indexOf("PeopleMotion") >= 0,

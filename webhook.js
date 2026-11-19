@@ -22,6 +22,18 @@ const WX = cfg.wxServer || {};
 const PORT = WX.port || 8787;
 const VERSION = "2026-10-12.54"; // /today今日人员活动页移动端排版改版: 120px侧边小图→通宽大图(图在上/徽章+两行摘要在下), 头部补共N次/有人X次统计, 修复灯箱提示条常显悬浮问题
 // 变更历史 2026-10-07.53: +设备端人形检测第三种上报格式 PeopleDetectionEvent(ys.iot/domain=HumanBodyDetection)归一为SmartHumanDet进人形链路(payload恒为"null",事件即信号; 之前完全未处理,9月每天32~55条全浪费) +无图人形事件不盲推: 改走60秒后补拍→图回写→补跑AI→判有人/读不懂才带图推送,AI判无人只记录,补拍也失败按旧行为无图放行(修10-07 12:56无图无结论盲推)
+// 变更历史 2026-11-19.63: +详情页'无人'时若为米家画面变动报警, 追加'画面有变化'标签(说明无人但画面有变化)
+// 变更历史 2026-11-19.62: +修米家推送详情'未找到该监控记录': 推送链接file缺mijia/前缀导致记录匹配失败, 推送侧补前缀+详情侧兼容查找并用规范file重写图片地址
+// 变更历史 2026-11-19.61: +/today卡片视频播放: /api/today-events输出videoUrl, 封面图中央'▶播放视频'按钮点击原地切换video播放(不并排双媒体)
+// 变更历史 2026-11-19.60: +/today单设备(serial)模式下隐藏'全部/双溪村/木山村'筛选标签——菜单点爷爷老家只返回该设备记录, 页面不再提供村筛选
+// 变更历史 2026-11-19.59: +/today单设备(serial)模式下村标签切换保留serial过滤, 修复点'全部'标签后混入其他村记录的问题
+// 变更历史 2026-11-19.58: +菜单按钮改名'双溪村(含爷爷老家)'→'爷爷老家', 点击只返回米家监控(爷爷老家)的今日有人记录
+// 变更历史 2026-11-19.57: +米家设备更名'双溪村爷爷家'→'爷爷老家'(推送标题/地点/事件name/设备清单/菜单按钮同步) +文本'爷爷老家今日有人'只返回爷爷老家单设备记录
+// 变更历史 2026-11-19.56: +文本'今日有人'指令解析村名(提到双溪村/爷爷→只查双溪村含爷爷家, 提到木山村→只查木山村) +今日汇总卡片链接带village参数(点开/today不再混入其他村记录)
+// 变更历史 2026-11-19.55: +微信推送入口与签名失败诊断日志(彻查菜单点击'服务故障': 事件未达/签名被拒可从日志一眼区分)
+// 变更历史 2026-11-19.54: +「今日有人」菜单新增「双溪村(含爷爷家)」按钮(key=today_sxc): 按双溪村过滤返回CP1+米家爷爷家全部今日报警, 带分组防越权
+// 变更历史 2026-11-19.53: +「今日有人」菜单/文本指令的查询设备清单加入双溪村爷爷家(米家), 提示文案与实际汇总范围一致
+// 变更历史 2026-11-18.52: +日报/半日报/今日汇总/历史页纳入米家(双溪村爷爷家)全部报警事件(画面变动+有人移动), 分组统一归双溪村; 日报文案无AI结论时显示报警类型
 // 变更历史 2026-09-30.51: +车辆复核AI回答中的人形信息不再丢弃: judgePerson提取personFromVeh, 有人则按人员活动推送(标题/kw4/徽章联动), 修18:0x菜地站人整条按无人车辆丢弃的漏报
 // 变更历史 2026-09-30.50: +同活动双推送治理: 入库判重认pushed/pushPending(车辆事件person=false挡不住同人二次消息), 推送前打占位/失败清除 —— 修15:52双推占满限流窗口致16:11真实事件被拦
 // 变更历史 2026-09-30.49: +车辆检测算法用71张真实双溪村样本校准: ASPECT_MAX 0.95→1.35(回收人骑车/车尾局部形态, 召回50%→75%, 误报+8pp由AI确认兜住) +vehicledetect返回blob明细
@@ -1692,6 +1704,16 @@ function deviceVillage(serial) {
   if (name.indexOf("木山村") >= 0) return "木山村";
   return "";
 }
+// 米家(爷爷老家)事件归属: 统一计入双溪村分组(日报/汇总/历史页共用)
+function eventVillage(e) {
+  if (e && e.source === "mijia") return "双溪村";
+  return deviceVillage(e.serial);
+}
+// 计入「人员活动」口径的事件: 萤石人形检测 或 米家任意报警(画面变动/有人移动等)
+function isPersonLikeEvent(e) {
+  return (e && e.source === "mijia") || e.person === true || /人形检测/.test(String(e.title));
+}
+const MIJIA_DEV_LABEL = "爷爷老家"; // 米家设备显示名(日报「覆盖设备」/今日有人清单补充展示)
 // 该微信能否接收指定设备的报警推送
 function canPushTo(openid, serial) {
   const g = groupOf(openid);
@@ -2212,6 +2234,7 @@ const TODAY_PAGE_HTML = "<!doctype html><html><head><meta charset=\"utf-8\">" +
   ".brief{font-size:12px;line-height:1.55;color:#cfd4da;margin-top:8px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}" +
   ".src{flex-shrink:0;font-size:10px;padding:1px 6px;border-radius:8px;color:#8ab4f8;background:rgba(138,180,248,.12);border:1px solid rgba(138,180,248,.25)}" +
   ".src-a{color:#ffa657;background:rgba(255,166,87,.1);border-color:rgba(255,166,87,.3)}" +
+  ".thumb{position:relative}.playbtn{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:rgba(0,0,0,.55);color:#fff;font-size:13px;padding:7px 14px;border-radius:18px;cursor:pointer;border:1px solid rgba(255,255,255,.35);z-index:2}" +
   ".lb{position:fixed;left:0;top:0;width:100%;height:100%;background:rgba(0,0,0,.96);z-index:99;display:none;align-items:center;justify-content:center;touch-action:none}.lb.show{display:flex}.lb img{max-width:100%;max-height:100%;-webkit-user-drag:none;user-select:none;transition:transform .15s ease}.lb-x{position:fixed;top:12px;right:14px;width:38px;height:38px;border-radius:19px;background:rgba(255,255,255,.18);color:#fff;font-size:22px;text-align:center;line-height:38px;z-index:100;cursor:pointer}.lb-t{display:none;position:fixed;left:0;right:0;bottom:16px;text-align:center;color:#fff;font-size:12px;opacity:.85;z-index:100}.lb-t.show{display:block}" +
   "</style></head><body>" +
   "<header>📋 今日人员活动<div class=\"meta\" id=\"sub\">加载中...</div>" +
@@ -2236,6 +2259,7 @@ const TODAY_PAGE_HTML = "<!doctype html><html><head><meta charset=\"utf-8\">" +
   "im.onerror=function(){if(it.picThumb&&it.pic&&im.src.indexOf(it.pic)>=0&&it.picThumb!==it.pic){im.src=it.picThumb}else if(it.picEz&&im.src!==it.picEz){im.src=it.picEz}else{th.textContent='⚠️';th.style.cssText='color:#5f6368;font-size:12px;display:flex;align-items:center;justify-content:center'}};" +
   "im.onclick=function(ev){ev.stopPropagation();openLB(it.pic||it.picEz)};" +
   "im.src=it.picThumb||it.pic||it.picEz;" +
+  "if(it.videoUrl){var pb=document.createElement('div');pb.className='playbtn';pb.textContent='▶ 播放视频';pb.onclick=function(ev){ev.stopPropagation();var v=document.createElement('video');v.controls=true;v.autoplay=true;v.setAttribute('playsinline','');v.src=it.videoUrl;v.style.cssText='width:100%;display:block';th.innerHTML='';th.appendChild(v)};th.appendChild(pb)}" +
   "var zi=document.createElement('span');zi.className='zi';zi.textContent='🔍 查看大图';th.appendChild(zi);d.appendChild(th)}" +
   "var r2=document.createElement('div');r2.className='row2';" +
   "if(it.verdict){var vb=document.createElement('span');vb.className='vd '+(it.verdict==='有人'?'vd-p':'vd-n');vb.textContent=it.verdict;r2.appendChild(vb)}" +
@@ -2244,6 +2268,7 @@ const TODAY_PAGE_HTML = "<!doctype html><html><head><meta charset=\"utf-8\">" +
   "var br=document.createElement('div');br.className='brief';if(it.brief){br.textContent=it.brief}else{br.textContent='暂无AI判读';br.style.color='#5f6368'}d.appendChild(br);" +
   "L.appendChild(d)});" +
   "var v=qVillage||'all';var ta=document.getElementById('tagAll');var ts=document.getElementById('tagSX');var tm=document.getElementById('tagMS');" +
+  "if(qSerial){var tg=document.querySelector('.tags');if(tg)tg.style.display='none'}" +
   "if(v==='all')ta.classList.add('on');else if(v==='双溪村')ts.classList.add('on');else if(v==='木山村')tm.classList.add('on');" +
   "}).catch(function(e){document.getElementById('sub').textContent='加载失败:'+e});" +
   "function lbShow(){document.getElementById('lb').classList.add('show');document.getElementById('lbX').classList.add('show');document.getElementById('lbT').classList.add('show');document.body.style.overflow='hidden'}" +
@@ -2440,11 +2465,12 @@ async function sendDigestCustom(openid, onlySerial, village) {
     const dev = onlySerial ? (cfg.devices || []).find(function (d) { return d.serial === onlySerial; }) : null;
     const label = dev ? dev.name : (village ? village + " " : "");
     if (onlySerial) evs = evs.filter(function (e) { return e.serial === onlySerial; });
-    if (village) evs = evs.filter(function (e) { return deviceVillage(e.serial) === village; });
+    if (village) evs = evs.filter(function (e) { return eventVillage(e) === village; });
     if (!evs.length) { await sendCustomText(openid, dear(openid) + "📭 " + (label ? label + " " : "") + "今天暂无人员活动记录，一切平安 ✅"); return; }
     const brief = function (e) {
       const aiOk = e.ai && e.ai.indexOf("(") !== 0;
-      return e.timeText + " " + e.name + (aiOk ? "｜" + e.ai.replace(/\s+/g, " ").slice(0, 50) : "");
+      const aiBrief = aiOk ? e.ai.replace(/\s+/g, " ").slice(0, 50) : String(e.title || "").slice(0, 50);
+      return e.timeText + " " + e.name + (aiBrief ? "｜" + aiBrief : "");
     };
     const pub2 = (cfg.wxTest || {}).publicBase || "";
     // 找最新有图记录作为缩略图
@@ -2453,11 +2479,12 @@ async function sendDigestCustom(openid, onlySerial, village) {
     // 构建卡片描述: 最多5条摘要
     const cardDesc = evs.slice(0, 5).map(function (e) {
       const aiOk = e.ai && String(e.ai).indexOf("(") !== 0;
-      return "⏰ " + e.timeText + " " + e.name + (aiOk ? " · " + String(e.ai).replace(/\s+/g, " ").slice(0, 35) : "");
+      const aiBrief = aiOk ? String(e.ai).replace(/\s+/g, " ").slice(0, 35) : String(e.title || "").slice(0, 35);
+      return "⏰ " + e.timeText + " " + e.name + (aiBrief ? " · " + aiBrief : "");
     }).join("\n") + (evs.length > 5 ? "\n... 共" + evs.length + "次" : "") + (pub2 ? "\n\n📖 点击查看全部记录" : "");
     await sendCustomNews(openid,
       dear(openid) + "📋 " + (label ? label + " " : "") + "今日人员活动 " + evs.length + " 次",
-      cardDesc, picUrl, pub2 ? tokUrl(pub2 + "/today" + (onlySerial ? "?serial=" + onlySerial : "")) : picUrl);
+      cardDesc, picUrl, pub2 ? tokUrl(pub2 + "/today" + (village ? "?village=" + encodeURIComponent(village) : "") + (onlySerial ? ((village ? "&" : "?") + "serial=" + encodeURIComponent(onlySerial)) : "")) : picUrl);
   } catch (e) {
     await sendCustomText(openid, "查询失败: " + e.message.slice(0, 60));
   }
@@ -2468,11 +2495,11 @@ function todayPersonEvents() {
   const d = new Date();
   const midnight = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   return evts.filter(function (e) {
-    return e.source !== "kanjia" && (e.ts || 0) >= midnight && (e.person === true || /人形检测/.test(String(e.title))) && !hidden.has(e.serial);
+    return e.source !== "kanjia" && (e.ts || 0) >= midnight && isPersonLikeEvent(e) && !hidden.has(e.serial);
   }).map(function (e) {
     const t = new Date(e.ts || Date.now());
     const hh = ("0" + t.getHours()).slice(-2) + ":" + ("0" + t.getMinutes()).slice(-2);
-    return { timeText: hh, name: e.name || e.serial || "", file: e.file || "", ai: String(e.ai || ""), serial: e.serial || "", provider: e.provider || "", ezvizPic: e.ezvizPic || "" };
+    return { timeText: hh, name: e.name || e.serial || "", file: e.file || "", ai: String(e.ai || ""), title: String(e.title || ""), serial: e.serial || "", provider: e.provider || "", ezvizPic: e.ezvizPic || "" };
   }).sort(function (a, b) { return a.timeText < b.timeText ? -1 : 1; });
 }
 
@@ -2604,7 +2631,7 @@ async function collectWindowEvents(startTs, endTs, village, serial) {
   const hidden = hiddenSerialSet();
   const filtered = loadEventsArr().filter(function (e) {
     return e.source !== "kanjia" && !hidden.has(e.serial) && (e.ts || 0) >= startTs && (e.ts || 0) <= endTs &&
-      (!village || deviceVillage(e.serial) === village) && (!serial || e.serial === serial);
+      (!village || eventVillage(e) === village) && (!serial || e.serial === serial);
   }).sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); });
   // 软去重: 同设备90秒内多条(实时推送与云端补录时间戳差异)合并为一条, 优先保留有图有AI的
   const merged = [];
@@ -2700,10 +2727,10 @@ function buildReportForDate(dateKey) {
   const evts = loadEventsArr().filter(function (e) {
     return e.source !== "kanjia" && !hidden.has(e.serial) && (e.ts || 0) >= mid && (e.ts || 0) < end;
   });
-  const person = evts.filter(function (e) { return e.person === true || /人形检测/.test(String(e.title)); });
+  const person = evts.filter(isPersonLikeEvent);
   const villages = {}, devices = {};
   for (const e of person) {
-    const v = deviceVillage(e.serial) || "其他";
+    const v = eventVillage(e) || "其他";
     villages[v] = (villages[v] || 0) + 1;
     devices[e.name || e.serial] = (devices[e.name || e.serial] || 0) + 1;
   }
@@ -2711,7 +2738,8 @@ function buildReportForDate(dateKey) {
     const t2 = new Date(e.ts || 0);
     const hhmm = ("0" + t2.getHours()).slice(-2) + ":" + ("0" + t2.getMinutes()).slice(-2);
     const aiOk = e.ai && String(e.ai).indexOf("(") !== 0;
-    return "⏰" + hhmm + " " + (e.name || e.serial) + (aiOk ? "｜" + String(e.ai).replace(/\s+/g, " ").slice(0, 40) : "｜（AI未判读）");
+    const aiBrief = aiOk ? String(e.ai).replace(/\s+/g, " ").slice(0, 40) : (String(e.title || "").slice(0, 40) || "（AI未判读）");
+    return "⏰" + hhmm + " " + (e.name || e.serial) + "｜" + aiBrief;
   });
   return { date: m[1] + "-" + m[2] + "-" + m[3], total: person.length, villages: villages, devices: devices, lines: lines, rebuilt: true };
 }
@@ -2806,7 +2834,7 @@ function buildDailyReportContent(evs, devLabels, village, kind) {
     first = "📊 老家监控" + label + "（人员活动 " + n + " 次）";
     const lines = evs.slice(0, 6).map(function (e) {
       const aiOk = e.ai && String(e.ai).indexOf("(") !== 0;
-      const aiBrief = aiOk ? String(e.ai).replace(/\s+/g, " ").slice(0, 28) : "（AI未判读）";
+      const aiBrief = aiOk ? String(e.ai).replace(/\s+/g, " ").slice(0, 28) : (String(e.title || "").slice(0, 28) || "（AI未判读）");
       return "⏰" + e.timeText + " " + e.name + "｜" + aiBrief;
     });
     remark = lines.join("\n") + (n > 6 ? "\n... 共" + n + "次" : "") +
@@ -2827,11 +2855,11 @@ function reportPersonEvents(kind) {
   const midnight = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const end = (kind === "half") ? (midnight + 12 * 3600e3) : (midnight + 86400e3);
   return evts.filter(function (e) {
-    return e.source !== "kanjia" && (e.ts || 0) >= midnight && (e.ts || 0) < end && (e.person === true || /人形检测/.test(String(e.title))) && !hidden.has(e.serial);
+    return e.source !== "kanjia" && (e.ts || 0) >= midnight && (e.ts || 0) < end && isPersonLikeEvent(e) && !hidden.has(e.serial);
   }).map(function (e) {
     const t = new Date(e.ts || Date.now());
     const hh = ("0" + t.getHours()).slice(-2) + ":" + ("0" + t.getMinutes()).slice(-2);
-    return { timeText: hh, name: e.name || e.serial || "", file: e.file || "", ai: String(e.ai || ""), serial: e.serial || "", provider: e.provider || "", ezvizPic: e.ezvizPic || "" };
+    return { timeText: hh, name: e.name || e.serial || "", file: e.file || "", ai: String(e.ai || ""), title: String(e.title || ""), serial: e.serial || "", provider: e.provider || "", ezvizPic: e.ezvizPic || "" };
   }).sort(function (a, b) { return a.timeText < b.timeText ? -1 : 1; });
 }
 function todayPersonEvents() { return reportPersonEvents("daily"); }
@@ -2891,13 +2919,13 @@ async function maybeReport(kind) {
       const scope = g.push || "all";
       if (scope === "all") { defaultIds.push(oid); continue; }
       if (scope === "none") continue; // 同事组等: 不接收日报
-      (buckets[scope] = buckets[scope] || { ids: [], labels: deviceNamesByVillage(scope) }).ids.push(oid);
+      (buckets[scope] = buckets[scope] || { ids: [], labels: deviceNamesByVillage(scope).concat(scope === "双溪村" ? [MIJIA_DEV_LABEL] : []) }).ids.push(oid);
     }
     const plan = [];
     const tplLabel = (kind === "half") ? "半日汇总" : "每日汇总";
     // 默认组: 全部设备
     if (defaultIds.length) {
-      const c = buildDailyReportContent(all, dailyReportDevices(), "", kind);
+      const c = buildDailyReportContent(all, dailyReportDevices().concat([MIJIA_DEV_LABEL]), "", kind);
       plan.push(pushTestTemplate(c.first, key, tplLabel, c.remark, c.url, true,
         { allowOid: function (oid) { return defaultIds.indexOf(oid) >= 0; }, dailyReport: true }));
     }
@@ -2905,7 +2933,7 @@ async function maybeReport(kind) {
     for (const scope of Object.keys(buckets)) {
       const b = buckets[scope];
       if (!b.ids.length) continue;
-      const evsV = all.filter(function (e) { return deviceVillage(e.serial) === scope; });
+      const evsV = all.filter(function (e) { return eventVillage(e) === scope; });
       const c = buildDailyReportContent(evsV, b.labels, scope, kind);
       plan.push(pushTestTemplate(c.first, key, tplLabel, c.remark, c.url, true,
         { allowOid: function (oid) { return b.ids.indexOf(oid) >= 0; }, dailyReport: true }));
@@ -2936,13 +2964,14 @@ async function maybeReport(kind) {
       try {
         const snap = { date: key, total: all.length, villages: {}, devices: {}, lines: [], published: true };
         for (const e of all) {
-          const v = deviceVillage(e.serial) || "其他";
+          const v = eventVillage(e) || "其他";
           snap.villages[v] = (snap.villages[v] || 0) + 1;
           snap.devices[e.name || e.serial] = (snap.devices[e.name || e.serial] || 0) + 1;
         }
         snap.lines = all.slice(0, 30).map(function (e) {
           const aiOk = e.ai && String(e.ai).indexOf("(") !== 0;
-          return (e.timeText || "") + " " + (e.name || "") + (aiOk ? "｜" + String(e.ai).replace(/\s+/g, " ").slice(0, 40) : "");
+          const aiBrief = aiOk ? String(e.ai).replace(/\s+/g, " ").slice(0, 40) : String(e.title || "").slice(0, 40);
+          return (e.timeText || "") + " " + (e.name || "") + (aiBrief ? "｜" + aiBrief : "");
         });
         saveDailyReportSnapshot(key, snap);
         console.log("[日报] 快照已存档: " + key);
@@ -3135,13 +3164,13 @@ const server = http.createServer(function (req, res) {
     try {
       const qSerial = u.searchParams.get("serial") || "";
       const qVillage = u.searchParams.get("village") || ""; // 分组过滤: 双溪村组打开日报链接只看该村的记录
-      const byVillage = function (e) { return !qVillage || deviceVillage(e.serial) === qVillage; };
+      const byVillage = function (e) { return !qVillage || eventVillage(e) === qVillage; };
       let evs = todayPersonEvents().filter(byVillage);
       if (qSerial) evs = evs.filter(function (e) { return e.serial === qSerial; });
       let displayDate = todayKey();
       let isToday = true;
       if (!evs.length) {
-        const all = loadEventsArr().filter(function (e) { return e.source !== "kanjia" && (e.person === true || /人形检测/.test(String(e.title))) && (!qSerial || e.serial === qSerial) && byVillage(e); });
+        const all = loadEventsArr().filter(function (e) { return e.source !== "kanjia" && isPersonLikeEvent(e) && (!qSerial || e.serial === qSerial) && byVillage(e); });
         if (all.length) {
           const latest = all[all.length - 1];
           const lt = new Date(latest.ts || 0);
@@ -3149,7 +3178,7 @@ const server = http.createServer(function (req, res) {
           evs = all.filter(function (e) { return (e.ts || 0) >= dayMid; }).map(function (e) {
             const t = new Date(e.ts || 0);
             const hh = ("0" + t.getHours()).slice(-2) + ":" + ("0" + t.getMinutes()).slice(-2);
-            return { timeText: hh, name: e.name || e.serial || "", file: e.file || "", ai: String(e.ai || ""), serial: e.serial || "", provider: e.provider || "", ezvizPic: e.ezvizPic || "" };
+            return { timeText: hh, name: e.name || e.serial || "", file: e.file || "", ai: String(e.ai || ""), title: String(e.title || ""), serial: e.serial || "", provider: e.provider || "", ezvizPic: e.ezvizPic || "" };
           }).sort(function (a, b) { return a.timeText < b.timeText ? -1 : 1; });
           displayDate = lt.getFullYear() + "-" + ("0" + (lt.getMonth() + 1)).slice(-2) + "-" + ("0" + lt.getDate()).slice(-2);
           isToday = false;
@@ -3198,7 +3227,8 @@ const server = http.createServer(function (req, res) {
           ai: (e.ai && String(e.ai).indexOf("(") !== 0) ? String(e.ai).replace(/\s+/g, " ").slice(0, 200) : "",
           pic: picUrl,
           picThumb: picThumbUrl || picUrl || picEzUrl, // 优先缩略图，回退原图
-          picEz: picEzUrl
+          picEz: picEzUrl,
+          videoUrl: e.video ? tokUrl(pub + "/videos/" + e.video) : ""
         };
       });
       res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
@@ -3228,9 +3258,9 @@ const server = http.createServer(function (req, res) {
       const hidden = hiddenSerialSet();
       const evs = loadEventsArr().filter(function (e) {
         return e.source !== "kanjia" && !hidden.has(e.serial) && (e.ts || 0) >= mid && (e.ts || 0) < end &&
-          (!qVillage || deviceVillage(e.serial) === qVillage);
+          (!qVillage || eventVillage(e) === qVillage);
       }).sort(function (a, b) { return (a.ts || 0) - (b.ts || 0); });
-      const isPersonEv = function (e) { return e.person === true || /人形检测/.test(String(e.title)); };
+      const isPersonEv = isPersonLikeEvent;
       const personN = evs.filter(isPersonEv).length;
       const shown = onlyPerson ? evs.filter(isPersonEv) : evs;
       const pub = (cfg.wxTest || {}).publicBase || ("http://" + (req.headers.host || "127.0.0.1:8787"));
@@ -3257,7 +3287,7 @@ const server = http.createServer(function (req, res) {
       const qVillage = u.searchParams.get("village") || "";
       const hidden = hiddenSerialSet();
       const evts = loadEventsArr().filter(function (e) {
-        return e.source !== "kanjia" && !hidden.has(e.serial) && (!qVillage || deviceVillage(e.serial) === qVillage);
+        return e.source !== "kanjia" && !hidden.has(e.serial) && (!qVillage || eventVillage(e) === qVillage);
       });
       const byDay = {};
       for (const e of evts) {
@@ -3265,7 +3295,7 @@ const server = http.createServer(function (req, res) {
         const k2 = d2.getFullYear() + "-" + (d2.getMonth() + 1) + "-" + d2.getDate();
         const b = byDay[k2] = byDay[k2] || { date: k2, total: 0, person: 0 };
         b.total++;
-        if (e.person === true || /人形检测/.test(String(e.title))) b.person++;
+        if (isPersonLikeEvent(e)) b.person++;
       }
       const reports = {};
       try {
@@ -3306,16 +3336,17 @@ const server = http.createServer(function (req, res) {
   // ---- 推送详情页：/detail?file=xxx 展示现场照片 + AI 分析结论 ----
   function buildDetailHtml(file) {
     const esc = function (s) { return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); };
-    const ORIG_URL = "/captures/" + encodeURIComponent(file || "");
+    // 资源 URL 统一过 tokUrl: 公网时自动附 token, 避免微信 WebView 不带 cookie 时图片/视频 403
+    let ORIG_URL = tokUrl("/captures/" + encodeURIComponent(file || ""));
     // 主图走600宽缩略图秒开(推送时已预生成缓存); 点击放大(openLB)才加载 2560x1440 原图
-    const THUMB_URL = "/captures/thumb/" + encodeURIComponent(file || "");
+    let THUMB_URL = tokUrl("/captures/thumb/" + encodeURIComponent(file || ""));
     const HEAD = "<!doctype html><html lang='zh-CN'><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1.0'><title>老家监控 · 现场分析</title><style>" +
       ":root{--bg:#0f1419;--card:#161d26;--border:#232b36;--text:#e6e6e6;--text2:#b6c2cc;--accent:#f5c518;--person:#ff6b6b;--nobody:#51cf66}" +
       "*{box-sizing:border-box;margin:0;padding:0}" +
       "body{background:var(--bg);color:var(--text);font-family:'Microsoft YaHei',system-ui,sans-serif;min-height:100vh;padding:16px}" +
       ".wrap{max-width:640px;margin:0 auto}h1{font-size:18px;color:#fff;margin-bottom:4px}.sub{color:var(--text2);font-size:13px;margin-bottom:16px}" +
       ".tag{display:inline-block;padding:3px 12px;border-radius:12px;font-size:13px;margin-bottom:16px}" +
-      ".tag.person{background:rgba(255,107,107,.2);color:var(--person)}.tag.nobody{background:rgba(81,207,102,.2);color:var(--nobody)}" +
+      ".tag.person{background:rgba(255,107,107,.2);color:var(--person)}.tag.nobody{background:rgba(81,207,102,.2);color:var(--nobody)}.tag.change{background:rgba(255,166,87,.2);color:#ffa657}" +
       ".imgbox{background:#0b0f14;border:1px solid var(--border);border-radius:12px;overflow:hidden;margin-bottom:8px;position:relative;cursor:zoom-in}" +
       ".imgbox img{width:100%;display:block;-webkit-user-drag:none;user-select:none;-webkit-touch-callout:none}" +
       ".hint{color:var(--text2);font-size:12px;margin:6px 0 16px 0;text-align:center}" +
@@ -3366,17 +3397,20 @@ const server = http.createServer(function (req, res) {
     if (!file) return HEAD + "<div class='empty'>缺少记录参数</div>" + TAIL;
     let ev = null;
     try { ev = loadEventsArr().find(function (e) { return e.file === file; }); } catch (e) {}
+    if (!ev) { try { ev = loadEventsArr().find(function (e) { return e.file === "mijia/" + file || (e.file || "").endsWith("/" + file); }); } catch (e) {} }
     if (!ev) return HEAD + "<div class='empty'>未找到该监控记录<br><br>可能是较早的记录，或图片已被清理</div>" + TAIL;
+    if (ev.file && ev.file !== file) { ORIG_URL = tokUrl("/captures/" + encodeURIComponent(ev.file)); THUMB_URL = tokUrl("/captures/thumb/" + encodeURIComponent(ev.file)); }
     const tagCls = ev.person ? 'person' : 'nobody';
+    const extraTag = (!ev.person && /画面变动/.test(String(ev.title || ""))) ? "<span class='tag change'>画面有变化</span>" : "";
     // 米家报警视频(约9s): 监控进程后台异步下载转码, 完成后 ev.video 有值; 未就绪时 onerror 显示提示
     const vidHtml = ev.video
-      ? "<div class='vidbox'><video controls preload='metadata' playsinline webkit-playsinline x5-playsinline poster='" + THUMB_URL + "' src='/videos/" + esc(ev.video) + "' onerror='this.parentNode.className+=\" fail\"'></video><div class='vid-fail'>📹 报警视频处理中，请稍后刷新查看</div></div>"
+      ? "<div class='vidbox'><video controls preload='metadata' playsinline webkit-playsinline x5-playsinline poster='" + THUMB_URL + "' src='" + tokUrl("/videos/" + ev.video) + "' onerror='this.parentNode.className+=\" fail\"'></video><div class='vid-fail'>📹 报警视频处理中，请稍后刷新查看</div></div>"
       : "";
     const aiText = (ev.ai && ev.ai !== '(点击AI分析)') ? ev.ai : '（暂无 AI 分析结论，可回到看板点击「AI分析」补充）';
     const inner =
       "<h1>📷 现场分析</h1>" +
       "<div class='sub'>" + esc(ev.name) + "</div>" +
-      "<span class='tag " + tagCls + "'>" + (ev.person ? '有人' : '无人') + "</span>" +
+      "<span class='tag " + tagCls + "'>" + (ev.person ? '有人' : '无人') + "</span>" + extraTag +
       // 主图改为可点击放大
       "<div class='imgbox' onclick='openLB()'>" +
         "<img id='mainImg' src='" + THUMB_URL + "' data-orig='" + ORIG_URL + "' alt='现场照片' loading='eager'>" +
@@ -3569,6 +3603,17 @@ const server = http.createServer(function (req, res) {
       });
       return;
     }
+    // 米家报警图: captures/mijia/<日期>/ 子目录(与 webapp.js 的同名路由一致)
+    if (fn.startsWith("mijia/")) {
+      const mfn = safeDecodeUri(fn.slice("mijia/".length));
+      if (mfn === null || /(^|\\)\.\\.(\\|$)/.test(mfn) || !/^\d{4}-\d{2}-\d{2}\/[A-Za-z0-9._-]+$/.test(mfn)) { res.writeHead(403); res.end(""); return; }
+      fs.readFile(path.join(ROOT, "captures", "mijia", mfn), function (err, buf) {
+        if (err) { res.writeHead(404); res.end("not found"); return; }
+        res.writeHead(200, { "Content-Type": "image/jpeg", "Cache-Control": "public, max-age=604800, immutable" });
+        res.end(buf);
+      });
+      return;
+    }
     // 原图
     if (!capturename.safeImageName(fn)) { res.writeHead(403); res.end(""); return; }
     fs.readFile(path.join(ROOT, "captures", fn), function (err, buf) {
@@ -3602,7 +3647,8 @@ const server = http.createServer(function (req, res) {
       const t0 = Date.now();
       try {
         const q = Object.fromEntries(u.searchParams.entries());
-        if (!checkSignature(q)) { res.end(""); return; }
+        if (!checkSignature(q)) { console.log("[" + new Date().toLocaleTimeString() + "] [微信] ⚠ 签名校验失败——请核对微信测试号后台Token与config.json wxServer.token是否一致"); res.end(""); return; }
+        console.log("[" + new Date().toLocaleTimeString() + "] [微信] 收到推送 msgType=" + xmlVal(body, "MsgType"));
         const msgType = xmlVal(body, "MsgType");
         const fromUser = xmlVal(body, "FromUserName");
         const toUser = xmlVal(body, "ToUserName");
@@ -3633,10 +3679,16 @@ const server = http.createServer(function (req, res) {
             else if (k === "menkou" || k === "door") text = "门口";
             else if (k === "today") {
               const devs4 = (cfg.devices || []).filter(function (d) { return d.watch && (!grpVillage || deviceVillage(d.serial) === grpVillage); });
-              const devNames = devs4.map(function (d) { return d.name; }).join("、");
+              const devNames = devs4.map(function (d) { return d.name; }).concat((!grpVillage || grpVillage === "双溪村") ? [MIJIA_DEV_LABEL] : []).join("、");
               console.log("[" + new Date().toLocaleTimeString() + "] [菜单] 今天是否有人活动");
               res.end(replyText(fromUser, toUser, "🔍 正在查询 " + devNames + " 今天的报警记录，结果马上发你..."));
               sendDigestCustom(fromUser, null, grpVillage).catch(function () {});
+              return;
+            }
+            else if (k === "today_sxc") {
+              console.log("[" + new Date().toLocaleTimeString() + "] [菜单] 今日有人-爷爷老家(米家单设备)");
+              res.end(replyText(fromUser, toUser, "🔍 正在查询 爷爷老家 今天的报警记录，结果马上发你..."));
+              sendDigestCustom(fromUser, "mijia", null).catch(function () {});
               return;
             }
             else if (k === "today_bk" || k === "today_bg" || k === "today_c6") {
@@ -3684,10 +3736,14 @@ const server = http.createServer(function (req, res) {
             res.end(replyText(fromUser, toUser, "🚫 您当前账号仅可查看设备状态，暂无查询权限。"));
             return;
           }
-          const devNames = (cfg.devices || []).filter(function (d) { return d.watch && (!village4user || deviceVillage(d.serial) === village4user); }).map(function (d) { return d.name; }).join("、");
+          let vq = village4user, only = null;
+          if (/爷爷老家/.test(text)) { only = "mijia"; vq = null; }
+          else if (/双溪村/.test(text)) vq = "双溪村";
+          else if (/木山村/.test(text)) vq = "木山村";
+          const devNames = only ? [MIJIA_DEV_LABEL] : (cfg.devices || []).filter(function (d) { return d.watch && (!vq || deviceVillage(d.serial) === vq); }).map(function (d) { return d.name; }).concat((!vq || vq === "双溪村") ? [MIJIA_DEV_LABEL] : []).join("、");
           res.end(replyText(fromUser, toUser, "🔍 正在查询 " + devNames + " 今天的报警记录，结果马上发你..."));
-          console.log("[" + new Date().toLocaleTimeString() + "] 「今日有人」主动查询已触发");
-          sendDigestCustom(fromUser, null, village4user).catch(function () {});
+          console.log("[" + new Date().toLocaleTimeString() + "] 「今日有人」主动查询已触发 (范围:" + (only ? MIJIA_DEV_LABEL : (vq || "全部")) + ")");
+          sendDigestCustom(fromUser, only, vq).catch(function () {});
           return;
         }
 

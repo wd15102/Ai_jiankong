@@ -1,5 +1,5 @@
 @echo off
-title AI Monitor Service - 按 Q 键停止服务并退出
+title AI Monitor Service (started, auto-close)
 cd /d "%~dp0"
 
 echo ==============================================
@@ -56,44 +56,7 @@ echo   Tunnel: %TUNNEL_URL%
 echo ==============================================
 echo.
 
-:watchdog
-echo.
-echo   [服务运行中] 按 Q 停止所有服务并释放端口后退出 (直接关窗口, 服务仍在后台!)
-choice /c QN /t 60 /d N /n >nul
-if errorlevel 2 goto :keep_guard
-:: ---- 用户按了 Q: 优雅停止并释放 ----
-echo.
-echo   [停止] 正在停止服务并释放端口...
-if exist "data\webhook.pid" (
-    for /f %%p in (data\webhook.pid) do curl -s -m 3 "http://127.0.0.1:8787/__shutdown?pid=%%p" >nul 2>&1
-)
-if exist "data\webapp.pid" (
-    for /f %%p in (data\webapp.pid) do curl -s -m 3 "http://127.0.0.1:8790/__shutdown?pid=%%p" >nul 2>&1
-)
-taskkill /F /IM cloudflared.exe >nul 2>&1
-timeout /t 2 /nobreak >nul
-powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'webhook\.js|webapp\.js|monitor\.js|mijia_monitor\.js' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
-echo   [完成] 服务已停止, 端口已释放, 可安全关闭窗口。
-pause
+echo   服务已在后台运行, 本窗口即将自动关闭...
+echo   如需停止/重启服务, 重新运行本脚本即可 (会先自动停止旧服务再启动)。
+timeout /t 3 /nobreak >nul
 exit /b 0
-:keep_guard
-:: 服务守护: 挂了自动重启
-curl -s -m 3 http://127.0.0.1:8787/health >nul 2>&1
-if errorlevel 1 (
-    echo [%time%] Webhook died, restarting...
-    start "AI-Monitor-Wx" /min cmd /c "node webhook.js >> data\webhook_run.log 2>&1"
-    timeout /t 3 /nobreak >nul
-)
-curl -s -m 3 http://127.0.0.1:8790/health >nul 2>&1
-if errorlevel 1 (
-    echo [%time%] WebApp died, restarting...
-    start "AI-Monitor-Web" /min cmd /c "node webapp.js --cfg config.json >> data\webapp_run.log 2>&1"
-    timeout /t 3 /nobreak >nul
-)
-powershell -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" | Where-Object { $_.CommandLine -match 'mijia_monitor' } | Select-Object -ExpandProperty ProcessId" | findstr /R "[0-9]" >nul
-if errorlevel 1 (
-    echo [%time%] Mijia monitor died, restarting...
-    start "AI-Monitor-Mijia" /min cmd /c "node mijia_monitor.js >> data\mijia_run.log 2>&1"
-    timeout /t 3 /nobreak >nul
-)
-goto watchdog
